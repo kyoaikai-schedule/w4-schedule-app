@@ -95,3 +95,9 @@ CREATE INDEX IF NOT EXISTS idx_prev_constraints_year_month ON prev_month_constra
 -- UPDATE settings SET key = 'nurseShiftPrefs-HCU' WHERE key = 'nurseShiftPrefs';
 -- UPDATE settings SET key = REPLACE(key, 'prevMonth-', 'prevMonth-HCU-')
 --   WHERE key LIKE 'prevMonth-%' AND key NOT LIKE 'prevMonth-HCU-%';
+
+-- ============================================
+-- マイグレーション: 職員表示順（display_order）
+-- ============================================
+ALTER TABLE hcu_nurses ADD COLUMN IF NOT EXISTS display_order INTEGER DEFAULT 0;
+ALTER TABLE emergency_nurses ADD COLUMN IF NOT EXISTS display_order INTEGER DEFAULT 0;

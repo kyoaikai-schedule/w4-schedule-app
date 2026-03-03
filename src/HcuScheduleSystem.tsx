@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Calendar, Settings, Moon, Sun, Clock, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, LogOut, Lock, Download, Upload, Edit2, Save, X, Eye, Users, FileSpreadsheet, Activity, Maximize2, Minimize2 } from 'lucide-react';
+import { Calendar, Settings, Moon, Sun, Clock, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, LogOut, Lock, Download, Upload, Edit2, Save, X, Eye, Users, FileSpreadsheet, Activity, Maximize2, Minimize2, ChevronUp, ChevronDown, RotateCcw } from 'lucide-react';
 import * as XLSX from 'xlsx-js-style';
 import { supabase } from './lib/supabase';
 
@@ -40,7 +40,7 @@ const createDBFunctions = (prefix: string) => {
   const t = (name: string) => `${prefix}_${name}`;
 
   const fetchNursesFromDB = async () => {
-    const { data, error } = await supabase.from(t('nurses')).select('*').order('id');
+    const { data, error } = await supabase.from(t('nurses')).select('*').order('display_order', { ascending: true }).order('id', { ascending: true });
     if (error) throw error;
     return data || [];
   };
@@ -565,9 +565,9 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
   };
 
   // 計算値
-  const activeNurses = useMemo(() => 
-    nurses.filter(n => n.active).sort((a, b) => 
-      (POSITIONS[a.position]?.priority || 99) - (POSITIONS[b.position]?.priority || 99)
+  const activeNurses = useMemo(() =>
+    nurses.filter(n => n.active).sort((a, b) =>
+      (a.display_order || 0) - (b.display_order || 0) || a.id - b.id
     ), [nurses]);
   
   const daysInMonth = getDaysInMonth(targetYear, targetMonth);
@@ -676,16 +676,51 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
       return;
     }
     const newId = Math.max(...nurses.map((n: any) => n.id), 0) + 1;
+    const maxOrder = Math.max(...nurses.map((n: any) => n.display_order || 0), 0);
     const newNurse = {
       id: newId,
       name: newNurseData.name.trim(),
       position: newNurseData.position,
-      active: true
+      active: true,
+      display_order: maxOrder + 1
     };
     setNurses([...nurses, newNurse]);
     saveWithStatus(async () => { await upsertNurseToDB(newNurse); });
     setShowAddNurse(false);
     setNewNurseData({ name: '', position: '一般' });
+  };
+
+  const moveNurse = async (nurseId: number, direction: 'up' | 'down') => {
+    const sorted = [...nurses].filter(n => n.active).sort((a, b) => (a.display_order || 0) - (b.display_order || 0) || a.id - b.id);
+    const idx = sorted.findIndex(n => n.id === nurseId);
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (swapIdx < 0 || swapIdx >= sorted.length) return;
+    const current = sorted[idx];
+    const swap = sorted[swapIdx];
+    const tempOrder = current.display_order || idx;
+    const swapOrder = swap.display_order || swapIdx;
+    const newCurrentOrder = swapOrder;
+    const newSwapOrder = tempOrder;
+    setNurses(prev => prev.map(n =>
+      n.id === current.id ? { ...n, display_order: newCurrentOrder } :
+      n.id === swap.id ? { ...n, display_order: newSwapOrder } : n
+    ));
+    await upsertNurseToDB({ ...current, display_order: newCurrentOrder });
+    await upsertNurseToDB({ ...swap, display_order: newSwapOrder });
+  };
+
+  const resetDisplayOrder = async () => {
+    const sorted = [...nurses].filter(n => n.active).sort((a, b) => a.id - b.id);
+    const updated = nurses.map(n => {
+      const idx = sorted.findIndex(s => s.id === n.id);
+      return idx >= 0 ? { ...n, display_order: idx } : n;
+    });
+    setNurses(updated);
+    saveWithStatus(async () => {
+      for (const n of updated.filter(n => n.active)) {
+        await upsertNurseToDB(n);
+      }
+    });
   };
 
   const updateNurse = (id: any, updates: any) => {
@@ -2752,6 +2787,9 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
               <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
                 <h2 className="text-lg font-bold text-gray-800">職員一覧（{activeNurses.length}名）</h2>
                 <div className="flex gap-2">
+                  <button onClick={resetDisplayOrder} className="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded text-xs flex items-center gap-1 transition-colors">
+                    <RotateCcw size={12} /> 並び順リセット
+                  </button>
                   <label className="px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg cursor-pointer flex items-center gap-2 text-sm transition-colors">
                     <Upload size={16} />
                     Excel読込
@@ -2766,14 +2804,25 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
                 <table className="w-full border-collapse text-sm">
                   <thead className="sticky top-0 bg-gray-50">
                     <tr>
+                      <th className="border p-2 text-center w-16">順序</th>
                       <th className="border p-2 text-left">氏名</th>
                       <th className="border p-2 text-center">役職</th>
                       <th className="border p-2 text-center">操作</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {activeNurses.map(nurse => (
+                    {activeNurses.map((nurse, idx) => (
                       <tr key={nurse.id} className="hover:bg-gray-50">
+                        <td className="border p-1 text-center">
+                          <div className="flex gap-0.5 justify-center">
+                            <button onClick={() => moveNurse(nurse.id, 'up')} disabled={idx === 0} className="p-1 text-xs rounded hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">
+                              <ChevronUp size={14} />
+                            </button>
+                            <button onClick={() => moveNurse(nurse.id, 'down')} disabled={idx === activeNurses.length - 1} className="p-1 text-xs rounded hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">
+                              <ChevronDown size={14} />
+                            </button>
+                          </div>
+                        </td>
                         <td className="border p-2">
                           {editingNurse === nurse.id ? (
                             <input defaultValue={nurse.name} id={`dash-name-${nurse.id}`} className="px-2 py-1 border rounded w-full" />
