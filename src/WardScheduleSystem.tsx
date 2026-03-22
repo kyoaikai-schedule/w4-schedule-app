@@ -228,9 +228,9 @@ interface ScheduleVersion {
 // メインコンポーネント
 // ============================================
 
-const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' | 'ER'; onBack?: () => void }) => {
-  const departmentName = department === 'ER' ? '救急外来' : 'HCU';
-  const dbPrefix = department === 'ER' ? 'emergency' : 'hcu';
+const WardScheduleSystem = () => {
+  const departmentName = '4階西病棟';
+  const dbPrefix = 'w4';
   const {
     t: getTableName, fetchNursesFromDB, upsertNurseToDB, deleteNurseFromDB,
     fetchRequestsFromDB, upsertRequestToDB, deleteRequestFromDB,
@@ -538,7 +538,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
   // バージョン管理: LocalStorage読み込み
   const loadVersionsFromLocalStorage = (year: number, month: number) => {
     try {
-      const key = `scheduleVersions-${department}-${year}-${month}`;
+      const key = `scheduleVersions-4W-${year}-${month}`;
       const data = localStorage.getItem(key);
       if (data) {
         const parsed = JSON.parse(data);
@@ -558,7 +558,7 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
   // バージョン管理: LocalStorage保存
   const saveVersionsToLocalStorage = (versions: ScheduleVersion[], nextVer: number) => {
     try {
-      const key = `scheduleVersions-${department}-${targetYear}-${targetMonth}`;
+      const key = `scheduleVersions-4W-${targetYear}-${targetMonth}`;
       localStorage.setItem(key, JSON.stringify({ versions, nextVersionNumber: nextVer }));
     } catch (e) {
       console.error('バージョン保存エラー:', e);
@@ -2764,14 +2764,6 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
             </button>
           </div>
 
-          {onBack && (
-            <button
-              onClick={onBack}
-              className="w-full mt-6 px-4 py-3 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-xl transition-colors text-sm"
-            >
-              ← 部門選択に戻る
-            </button>
-          )}
 
           <p className="text-center text-xs text-gray-400 mt-8">
             データはサーバーに安全に保存されます
@@ -6569,4 +6561,4 @@ const HcuScheduleSystem = ({ department = 'HCU', onBack }: { department?: 'HCU' 
   );
 };
 
-export default HcuScheduleSystem;
+export default WardScheduleSystem;
