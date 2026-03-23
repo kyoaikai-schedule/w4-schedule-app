@@ -139,7 +139,7 @@ const createDBFunctions = (prefix: string) => {
 // 固定アクセスコード生成（ID + 名前から常に同じコードを生成）
 const generateFixedAccessCode = (id, name) => {
   let hash = 0;
-  const str = `${id}-${name}-w42025`;
+  const str = `${id}-${name}-hcu2025`;
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
     hash = ((hash << 5) - hash) + char;
@@ -546,7 +546,7 @@ const WardScheduleSystem = () => {
   // LocalStorageバックアップ保存
   const saveScheduleToLocalStorage = (scheduleData: any) => {
     try {
-      const key = `w4-schedule-backup-${targetYear}-${targetMonth}`;
+      const key = `hcu-schedule-backup-${targetYear}-${targetMonth}`;
       localStorage.setItem(key, JSON.stringify(scheduleData));
     } catch (e) {
       console.error('LocalStorage保存エラー:', e);
@@ -556,7 +556,7 @@ const WardScheduleSystem = () => {
   // LocalStorageバックアップ復元
   const loadScheduleFromLocalStorage = () => {
     try {
-      const key = `w4-schedule-backup-${targetYear}-${targetMonth}`;
+      const key = `hcu-schedule-backup-${targetYear}-${targetMonth}`;
       const data = localStorage.getItem(key);
       return data ? JSON.parse(data) : null;
     } catch (e) {
@@ -568,7 +568,7 @@ const WardScheduleSystem = () => {
   // LocalStorageバックアップ削除
   const clearScheduleFromLocalStorage = () => {
     try {
-      const key = `w4-schedule-backup-${targetYear}-${targetMonth}`;
+      const key = `hcu-schedule-backup-${targetYear}-${targetMonth}`;
       localStorage.removeItem(key);
     } catch (e) {
       console.error('LocalStorage削除エラー:', e);
@@ -578,7 +578,7 @@ const WardScheduleSystem = () => {
   // バージョン管理: LocalStorage読み込み
   const loadVersionsFromLocalStorage = (year: number, month: number) => {
     try {
-      const key = `scheduleVersions-4W-${year}-${month}`;
+      const key = `scheduleVersions-${dbPrefix}-${year}-${month}`;
       const data = localStorage.getItem(key);
       if (data) {
         const parsed = JSON.parse(data);
@@ -598,7 +598,7 @@ const WardScheduleSystem = () => {
   // バージョン管理: LocalStorage保存
   const saveVersionsToLocalStorage = (versions: ScheduleVersion[], nextVer: number) => {
     try {
-      const key = `scheduleVersions-4W-${targetYear}-${targetMonth}`;
+      const key = `scheduleVersions-${dbPrefix}-${targetYear}-${targetMonth}`;
       localStorage.setItem(key, JSON.stringify({ versions, nextVersionNumber: nextVer }));
     } catch (e) {
       console.error('バージョン保存エラー:', e);
