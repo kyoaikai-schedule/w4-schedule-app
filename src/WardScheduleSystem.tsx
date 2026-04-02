@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Calendar, CalendarDays, Settings, Moon, Sun, Clock, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, LogOut, Lock, Download, Upload, Edit2, Save, X, Eye, Users, FileSpreadsheet, Activity, Maximize2, Minimize2, ChevronUp, ChevronDown, RotateCcw, History, BarChart3, UserX } from 'lucide-react';
+import { Calendar, CalendarDays, Settings, Moon, Sun, Clock, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, LogOut, Lock, Download, Upload, Edit2, Save, X, Eye, Users, FileSpreadsheet, Activity, Maximize2, Minimize2, ChevronUp, ChevronDown, RotateCcw, History, BarChart3, UserX, List } from 'lucide-react';
 import * as XLSX from 'xlsx-js-style';
 import { supabase } from './lib/supabase';
 
@@ -14,6 +14,14 @@ const POSITIONS = {
   一般: { name: '一般', color: 'bg-slate-100 text-slate-600 border-slate-200', priority: 4 }
 };
 
+type CustomShift = {
+  symbol: string;
+  name: string;
+  color: string;
+  category: 'work' | 'off' | 'half_off' | 'other';
+  hours: number;
+};
+
 const SHIFT_TYPES = {
   日: { name: '日勤', hours: 7.5, color: 'bg-blue-100 text-blue-700' },
   夜: { name: '夜勤', hours: 14.5, color: 'bg-purple-100 text-purple-700' },
@@ -24,6 +32,30 @@ const SHIFT_TYPES = {
   有: { name: '有休', hours: 0, color: 'bg-emerald-100 text-emerald-700' },
   午前半: { name: '午前半休', hours: 3.75, color: 'bg-lime-100 text-lime-700' },
   午後半: { name: '午後半休', hours: 3.75, color: 'bg-orange-100 text-orange-700' },
+};
+
+const CUSTOM_SHIFT_COLORS: Record<string, string> = {
+  blue: 'bg-blue-100 text-blue-700', purple: 'bg-purple-100 text-purple-700',
+  pink: 'bg-pink-100 text-pink-700', teal: 'bg-teal-100 text-teal-700',
+  cyan: 'bg-cyan-100 text-cyan-700', gray: 'bg-gray-100 text-gray-600',
+  emerald: 'bg-emerald-100 text-emerald-700', lime: 'bg-lime-100 text-lime-700',
+  orange: 'bg-orange-100 text-orange-700', red: 'bg-red-100 text-red-700',
+  amber: 'bg-amber-100 text-amber-700', indigo: 'bg-indigo-100 text-indigo-700',
+  rose: 'bg-rose-100 text-rose-700', violet: 'bg-violet-100 text-violet-700',
+  yellow: 'bg-yellow-100 text-yellow-700', green: 'bg-green-100 text-green-700',
+  sky: 'bg-sky-100 text-sky-700', slate: 'bg-slate-100 text-slate-700',
+};
+
+const CUSTOM_SHIFT_EXCEL_COLORS: Record<string, { bg: string; fg: string }> = {
+  blue: { bg: 'DBEAFE', fg: '1D4ED8' }, purple: { bg: 'EDE9FE', fg: '7C3AED' },
+  pink: { bg: 'FCE7F3', fg: 'DB2777' }, teal: { bg: 'CCFBF1', fg: '0F766E' },
+  cyan: { bg: 'CFFAFE', fg: '0891B2' }, gray: { bg: 'E5E7EB', fg: '6B7280' },
+  emerald: { bg: 'D1FAE5', fg: '059669' }, lime: { bg: 'ECFCCB', fg: '65A30D' },
+  orange: { bg: 'FFEDD5', fg: 'EA580C' }, red: { bg: 'FEE2E2', fg: 'DC2626' },
+  amber: { bg: 'FEF3C7', fg: 'D97706' }, indigo: { bg: 'E0E7FF', fg: '4338CA' },
+  rose: { bg: 'FFE4E6', fg: 'E11D48' }, violet: { bg: 'EDE9FE', fg: '7C3AED' },
+  yellow: { bg: 'FEF9C3', fg: 'CA8A04' }, green: { bg: 'DCFCE7', fg: '16A34A' },
+  sky: { bg: 'E0F2FE', fg: '0284C7' }, slate: { bg: 'E2E8F0', fg: '475569' },
 };
 
 const VALID_SHIFTS = ['日', '夜', '明', '管夜', '管明', '休', '有', '午前半', '午後半'];
@@ -342,6 +374,10 @@ const WardScheduleSystem = () => {
   const [nightNgPairs, setNightNgPairs] = useState<[number, number][]>([]);
   const [showNightNgPairs, setShowNightNgPairs] = useState(false);
 
+  // カスタムシフト
+  const [customShifts, setCustomShifts] = useState<CustomShift[]>([]);
+  const [showShiftManager, setShowShiftManager] = useState(false);
+
   // 前月データ関連（プレビュー用）
   const [showPrevMonthImport, setShowPrevMonthImport] = useState(false);
   const [showPrevMonthReview, setShowPrevMonthReview] = useState(false);
@@ -362,6 +398,28 @@ const WardScheduleSystem = () => {
     nameColumn: 'C',
     positionColumn: 'D'
   });
+
+  // allShifts: システムシフト＋カスタムシフト統合
+  const allShifts = useMemo(() => {
+    const merged: Record<string, { name: string; color: string; category: string; hours: number }> = {};
+    Object.entries(SHIFT_TYPES).forEach(([k, v]) => {
+      merged[k] = { ...v, category: k === '休' || k === '有' ? 'off' : k === '午前半' || k === '午後半' ? 'half_off' : k === '明' || k === '管明' ? 'other' : 'work' };
+    });
+    customShifts.forEach(cs => {
+      merged[cs.symbol] = { name: cs.name, color: CUSTOM_SHIFT_COLORS[cs.color] || cs.color, category: cs.category, hours: cs.hours };
+    });
+    return merged;
+  }, [customShifts]);
+
+  const validShifts = useMemo(() => Object.keys(allShifts), [allShifts]);
+
+  const sanitizeShiftLocal = (s: any): string | null => {
+    if (!s) return null;
+    const str = String(s).trim();
+    if (str === '午前半' || str === '前半' || str === 'AM半') return '午前半';
+    if (str === '午後半' || str === '後半' || str === 'PM半') return '午後半';
+    return validShifts.includes(str) ? str : null;
+  };
 
   // Supabaseからデータ読み込み
   useEffect(() => {
@@ -389,9 +447,8 @@ const WardScheduleSystem = () => {
           const invalidRows: any[] = [];
           dbSchedules.forEach((s: any) => {
             if (!schedData[s.nurse_id]) schedData[s.nurse_id] = new Array(days).fill(null);
-            const clean = sanitizeShift(s.shift);
+            const clean = s.shift ? String(s.shift).trim() : null;
             schedData[s.nurse_id][s.day - 1] = clean;
-            if (!clean && s.shift) invalidRows.push(s); // DB上に不正値あり
           });
           // 不正値をDBから削除
           if (invalidRows.length > 0) {
@@ -476,6 +533,13 @@ const WardScheduleSystem = () => {
           } catch(e) { console.error('requestDeadline解析エラー:', e); }
         }
 
+        // カスタムシフトの読み込み
+        const savedCustomShifts = await fetchSettingFromDB('customShifts');
+        if (savedCustomShifts) {
+          try { setCustomShifts(JSON.parse(savedCustomShifts)); }
+          catch(e) { console.error('customShifts解析エラー:', e); }
+        }
+
         // 管理者パスワードの読み込み
         const savedPw = await fetchSettingFromDB('adminPassword');
         if (savedPw) {
@@ -508,6 +572,15 @@ const WardScheduleSystem = () => {
     }, 500);
     return () => clearTimeout(timer);
   }, [requestDeadline, settingsLoaded, isAdminAuth]);
+
+  // customShiftsの変更をDBに保存
+  useEffect(() => {
+    if (!settingsLoaded || !isAdminAuth) return;
+    const timer = setTimeout(() => {
+      saveSettingToDB('customShifts', JSON.stringify(customShifts));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [customShifts, settingsLoaded, isAdminAuth]);
 
   // ページ離脱時の確認ダイアログ
   useEffect(() => {
@@ -1208,8 +1281,8 @@ const WardScheduleSystem = () => {
     if (s === '休' || s === '公休' || s === '公' || s === 'O' || s === '0') return '休';
     if (s === '有' || s === '有休' || s === '有給' || s === 'Y') return '有';
     if (s === 'nan' || s === 'NaN') return '休';
-    // 無効な値はnull扱い
-    return VALID_SHIFTS.includes(s) ? s : '';
+    // システムシフトまたはカスタムシフトならそのまま返す
+    return VALID_SHIFTS.includes(s) || validShifts.includes(s) ? s : '';
   };
 
   // 前月データをクリア
@@ -2438,7 +2511,15 @@ const WardScheduleSystem = () => {
       case '有': return { ...base, fill: { fgColor: { rgb: 'D1FAE5' } }, font: { color: { rgb: '059669' } } };
       case '午前半': return { ...base, fill: { fgColor: { rgb: 'ECFCCB' } }, font: { color: { rgb: '65A30D' } } };
       case '午後半': return { ...base, fill: { fgColor: { rgb: 'FFEDD5' } }, font: { color: { rgb: 'EA580C' } } };
-      default: return { ...base, font: {} };
+      default: {
+        // カスタムシフトの色を検索
+        const cs = customShifts.find(c => c.symbol === shift);
+        if (cs && CUSTOM_SHIFT_EXCEL_COLORS[cs.color]) {
+          const ec = CUSTOM_SHIFT_EXCEL_COLORS[cs.color];
+          return { ...base, fill: { fgColor: { rgb: ec.bg } }, font: { color: { rgb: ec.fg } } };
+        }
+        return { ...base, font: {} };
+      }
     }
   };
 
@@ -2769,18 +2850,16 @@ const WardScheduleSystem = () => {
       // ★ 最新stateから現在値を取得
       const currentRequest = nurseRequests[day] || null;
 
-      // サイクル: 空→休→有→前→後→日→夜→管夜→空
+      // サイクル: 空→休→有→前→後→日→夜→管夜→[カスタムシフト]→空
       // 「明」「管明」はクリック→休に変更
+      const staffCycle: (string | null)[] = ['休', '有', '前', '後', '日', '夜', '管夜', ...customShifts.map(cs => cs.symbol), null];
       let newValue: string | null;
-      if (!currentRequest) newValue = '休';
-      else if (currentRequest === '休') newValue = '有';
-      else if (currentRequest === '有') newValue = '前';
-      else if (currentRequest === '前') newValue = '後';
-      else if (currentRequest === '後') newValue = '日';
-      else if (currentRequest === '日') newValue = '夜';
-      else if (currentRequest === '夜') newValue = '管夜';
-      else if (currentRequest === '明' || currentRequest === '管明') newValue = '休';
-      else newValue = null; // 管夜 or その他→クリア
+      if (currentRequest === '明' || currentRequest === '管明') {
+        newValue = '休';
+      } else {
+        const idx = currentRequest ? staffCycle.indexOf(currentRequest) : -1;
+        newValue = staffCycle[(idx + 1) % staffCycle.length];
+      }
 
       // ① 「夜」or「管夜」解除時 → 自動セットした明系・休のみクリア
       if (currentRequest === '夜' || currentRequest === '管夜') {
@@ -3006,6 +3085,9 @@ const WardScheduleSystem = () => {
               <div className="flex flex-wrap gap-2">
                 <button onClick={() => setShowDevLogin(true)} className="px-3 py-2 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg text-sm flex items-center gap-1">
                   <Eye size={16} /> 職員画面確認
+                </button>
+                <button onClick={() => setShowShiftManager(true)} className="px-3 py-2 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 rounded-lg text-sm flex items-center gap-1">
+                  <List size={16} /> シフト種類
                 </button>
                 <button onClick={() => setShowNightNgPairs(true)} className="px-3 py-2 bg-red-50 hover:bg-red-100 text-red-700 rounded-lg text-sm flex items-center gap-1">
                   <UserX size={16} /> 夜勤NG組
@@ -3255,7 +3337,7 @@ const WardScheduleSystem = () => {
         {showStats && (() => {
           const hasScheduleData = schedule && schedule.month === `${targetYear}-${targetMonth}`;
           const stats = activeNurses.map(nurse => {
-            const shifts = hasScheduleData ? (schedule.data[nurse.id] || []).map((s: any) => sanitizeShift(s)) : [];
+            const shifts = hasScheduleData ? (schedule.data[nurse.id] || []).map((s: any) => sanitizeShiftLocal(s)) : [];
             let dayShifts = 0, nightShifts = 0, daysOff = 0, paidLeave = 0, halfDays = 0, totalWork = 0;
             shifts.forEach((s: any) => {
               if (s === '日') { dayShifts++; totalWork++; }
@@ -3263,6 +3345,12 @@ const WardScheduleSystem = () => {
               else if (s === '休') daysOff++;
               else if (s === '有') { daysOff++; paidLeave++; }
               else if (s === '午前半' || s === '午後半') { halfDays++; totalWork++; }
+              else if (s && allShifts[s]) {
+                const cat = allShifts[s].category;
+                if (cat === 'off') daysOff++;
+                else if (cat === 'half_off') halfDays++;
+                else if (cat === 'work') totalWork++;
+              }
             });
             const restTotal = daysOff + halfDays * 0.5;
             return { nurse, dayShifts, nightShifts, daysOff, paidLeave, halfDays, totalWork, restTotal };
@@ -3919,7 +4007,7 @@ const WardScheduleSystem = () => {
           {/* 勤務表閲覧モーダル */}
           {showMySchedule && (() => {
             const myShifts = (schedule && schedule.month === `${targetYear}-${targetMonth}`)
-              ? (schedule.data[staffNurseId] || []).map((s: any) => sanitizeShift(s))
+              ? (schedule.data[staffNurseId] || []).map((s: any) => sanitizeShiftLocal(s))
               : [];
             const hasData = myShifts.length > 0 && myShifts.some((s: any) => s !== null);
             const holidays = getJapaneseHolidays(targetYear, targetMonth);
@@ -3960,7 +4048,7 @@ const WardScheduleSystem = () => {
                           const day = idx + 1;
                           const dow = new Date(targetYear, targetMonth, day).getDay();
                           const isHoliday = holidays.includes(day);
-                          const shiftColor = shift ? ((SHIFT_TYPES as any)[shift]?.color || 'bg-gray-50') : 'bg-white';
+                          const shiftColor = shift ? (allShifts[shift]?.color || 'bg-gray-50') : 'bg-white';
                           return (
                             <div key={day} className={`${shiftColor} p-1.5 min-h-[3rem] flex flex-col items-center`}>
                               <span className={`text-xs font-medium ${isHoliday || dow === 0 ? 'text-red-500' : dow === 6 ? 'text-blue-500' : 'text-gray-500'}`}>{day}</span>
@@ -4598,7 +4686,7 @@ const WardScheduleSystem = () => {
             activeNurses.forEach(nurse => {
               const raw = schedule.data[nurse.id];
               if (raw && Array.isArray(raw)) {
-                scheduleDisplayData[nurse.id] = raw.map(s => sanitizeShift(s));
+                scheduleDisplayData[nurse.id] = raw.map(s => sanitizeShiftLocal(s));
               } else {
                 scheduleDisplayData[nurse.id] = new Array(daysInMonth).fill(null);
               }
@@ -4632,7 +4720,7 @@ const WardScheduleSystem = () => {
           //     バックアップあり（手動設定した夜）→ 元の値に復元
           //     バックアップなし（自動生成/DB由来の夜）→ 翌日・翌々日はそのまま変更しない
           const handleCellClick = (nurseId: any, dayIndex: number, currentShift: string | null) => {
-            const CYCLE = ['日', '夜', '管夜', '休', '有', '午前半', '午後半', null];
+            const CYCLE: (string | null)[] = ['日', '夜', '管夜', '休', '有', '午前半', '午後半', ...customShifts.map(cs => cs.symbol), null];
             const currentIdx = currentShift ? CYCLE.indexOf(currentShift) : -1;
             const nextIdx = (currentShift === '明' || currentShift === '管明') ? CYCLE.indexOf('休') : (currentIdx >= 0 ? (currentIdx + 1) % CYCLE.length : 0);
             const newShift = CYCLE[nextIdx];
@@ -4841,9 +4929,9 @@ const WardScheduleSystem = () => {
                     const stats = {
                       night: shifts.filter(s => s === '夜' || s === '管夜').length,
                       day: shifts.filter(s => s === '日').length,
-                      off: shifts.filter(s => s === '休' || s === '有').length
-                        + shifts.filter(s => s === '午前半' || s === '午後半').length * 0.5,
-                      work: shifts.filter(s => s && s !== '休' && s !== '有' && s !== '午前半' && s !== '午後半').length
+                      off: shifts.filter(s => s === '休' || s === '有' || (s && allShifts[s]?.category === 'off')).length
+                        + shifts.filter(s => s === '午前半' || s === '午後半' || (s && allShifts[s]?.category === 'half_off')).length * 0.5,
+                      work: shifts.filter(s => s && s !== '休' && s !== '有' && s !== '午前半' && s !== '午後半' && allShifts[s]?.category !== 'off' && allShifts[s]?.category !== 'half_off').length
                     };
                     
                     return (
@@ -4872,8 +4960,8 @@ const WardScheduleSystem = () => {
                           return (
                           <td
                             key={i}
-                            onClick={() => handleCellClick(nurse.id, i, sanitizeShift(shift))}
-                            className={`border text-center cursor-pointer hover:bg-blue-50 transition-colors ${isMaximized ? 'px-0 py-px' : 'p-1'} ${SHIFT_TYPES[shift]?.color || ''} ${
+                            onClick={() => handleCellClick(nurse.id, i, sanitizeShiftLocal(shift))}
+                            className={`border text-center cursor-pointer hover:bg-blue-50 transition-colors ${isMaximized ? 'px-0 py-px' : 'p-1'} ${allShifts[shift]?.color || ''} ${
                               matchesRequest ? 'border-2 border-green-500' :
                               differsFromRequest ? 'border-2 border-red-400' :
                               differsFromPrev ? 'border-2 border-orange-400' : ''
@@ -5832,6 +5920,159 @@ const WardScheduleSystem = () => {
             </div>
           </div>
         )}
+
+        {/* シフト種類管理モーダル */}
+        {showShiftManager && (() => {
+          const PRESET_SHIFTS: CustomShift[] = [
+            { symbol: '・', name: '日勤', category: 'work', color: 'blue', hours: 7.5 },
+            { symbol: '欠', name: '欠勤', category: 'off', color: 'red', hours: 0 },
+            { symbol: '産', name: '産前産後休暇', category: 'off', color: 'rose', hours: 0 },
+            { symbol: '育', name: '育児休業', category: 'off', color: 'rose', hours: 0 },
+            { symbol: '忌', name: '忌引', category: 'off', color: 'slate', hours: 0 },
+            { symbol: '結', name: '結婚休暇', category: 'off', color: 'pink', hours: 0 },
+            { symbol: '介', name: '介護休暇', category: 'off', color: 'amber', hours: 0 },
+            { symbol: '特', name: '特別休暇', category: 'off', color: 'violet', hours: 0 },
+            { symbol: '研', name: '研修', category: 'other', color: 'indigo', hours: 7.5 },
+            { symbol: '出張', name: '出張', category: 'work', color: 'sky', hours: 7.5 },
+            { symbol: '生理', name: '生理休暇', category: 'off', color: 'pink', hours: 0 },
+            { symbol: '/ﾈ', name: '午後年休', category: 'half_off', color: 'emerald', hours: 3.75 },
+            { symbol: 'ﾈ/', name: '午前年休', category: 'half_off', color: 'emerald', hours: 3.75 },
+            { symbol: '/ｹ', name: '午後欠勤', category: 'half_off', color: 'red', hours: 3.75 },
+            { symbol: 'ｹ/', name: '午前欠勤', category: 'half_off', color: 'red', hours: 3.75 },
+          ];
+          const categoryLabel = (c: string) => c === 'work' ? '出勤' : c === 'off' ? '休み' : c === 'half_off' ? '半休' : 'その他';
+          return (
+          <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
+            <div className="min-h-full flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl">
+                <div className="flex items-center justify-between p-6 border-b">
+                  <h3 className="text-xl font-bold text-gray-800">シフト種類管理</h3>
+                  <button type="button" onClick={() => setShowShiftManager(false)} className="p-2 hover:bg-gray-100 rounded-full"><X size={20} /></button>
+                </div>
+                <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
+                  {/* システムシフト */}
+                  <div>
+                    <h4 className="font-bold text-gray-700 mb-2">システムシフト（変更不可）</h4>
+                    <div className="grid grid-cols-3 gap-2">
+                      {Object.entries(SHIFT_TYPES).map(([k, v]) => (
+                        <div key={k} className={`${v.color} px-3 py-1.5 rounded-lg text-sm font-medium`}>
+                          {k} - {v.name}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* カスタムシフト */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="font-bold text-gray-700">カスタムシフト</h4>
+                      <button
+                        onClick={() => {
+                          const toAdd = PRESET_SHIFTS.filter(p =>
+                            !customShifts.some(cs => cs.symbol === p.symbol) && !VALID_SHIFTS.includes(p.symbol)
+                          );
+                          if (toAdd.length === 0) { alert('全てのプリセットが登録済みです'); return; }
+                          setCustomShifts(prev => [...prev, ...toAdd]);
+                        }}
+                        className="px-3 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 rounded-lg text-sm font-medium"
+                      >
+                        病院標準セットを追加
+                      </button>
+                    </div>
+
+                    {customShifts.length > 0 && (
+                      <table className="w-full text-sm border-collapse mb-4">
+                        <thead>
+                          <tr className="bg-gray-50">
+                            <th className="border p-2 text-left">記号</th>
+                            <th className="border p-2 text-left">名称</th>
+                            <th className="border p-2 text-center">カテゴリ</th>
+                            <th className="border p-2 text-center">色</th>
+                            <th className="border p-2 w-12"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {customShifts.map((cs, idx) => (
+                            <tr key={idx}>
+                              <td className="border p-2">
+                                <span className={`${CUSTOM_SHIFT_COLORS[cs.color] || ''} px-2 py-0.5 rounded font-bold`}>{cs.symbol}</span>
+                              </td>
+                              <td className="border p-2">{cs.name}</td>
+                              <td className="border p-2 text-center">{categoryLabel(cs.category)}</td>
+                              <td className="border p-2 text-center">
+                                <span className={`${CUSTOM_SHIFT_COLORS[cs.color] || ''} px-2 py-0.5 rounded text-xs`}>{cs.color}</span>
+                              </td>
+                              <td className="border p-2 text-center">
+                                <button onClick={() => setCustomShifts(prev => prev.filter((_, i) => i !== idx))} className="text-red-500 hover:text-red-700"><Trash2 size={14} /></button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+
+                    {/* 新規追加フォーム */}
+                    <div className="bg-gray-50 rounded-xl p-4">
+                      <h5 className="font-medium text-gray-700 mb-3">新規追加</h5>
+                      <form onSubmit={(e) => {
+                        e.preventDefault();
+                        const form = e.target as HTMLFormElement;
+                        const symbol = (form.elements.namedItem('symbol') as HTMLInputElement).value.trim();
+                        const name = (form.elements.namedItem('csname') as HTMLInputElement).value.trim();
+                        const category = (form.elements.namedItem('category') as HTMLSelectElement).value as CustomShift['category'];
+                        const color = (form.elements.namedItem('color') as HTMLSelectElement).value;
+                        const hours = parseFloat((form.elements.namedItem('hours') as HTMLInputElement).value) || 0;
+                        if (!symbol) { alert('記号を入力してください'); return; }
+                        if (VALID_SHIFTS.includes(symbol) || customShifts.some(cs => cs.symbol === symbol)) { alert('この記号は既に使用されています'); return; }
+                        setCustomShifts(prev => [...prev, { symbol, name: name || symbol, color, category, hours }]);
+                        form.reset();
+                      }} className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1">記号（最大4文字）</label>
+                          <input name="symbol" maxLength={4} className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="例: 研" />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1">名称</label>
+                          <input name="csname" className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="例: 研修" />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1">カテゴリ</label>
+                          <select name="category" className="w-full px-3 py-2 border rounded-lg text-sm">
+                            <option value="work">出勤</option>
+                            <option value="off">休み</option>
+                            <option value="half_off">半休</option>
+                            <option value="other">その他</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1">色</label>
+                          <select name="color" className="w-full px-3 py-2 border rounded-lg text-sm">
+                            {Object.keys(CUSTOM_SHIFT_COLORS).map(c => (
+                              <option key={c} value={c}>{c}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1">時間</label>
+                          <input name="hours" type="number" step="0.25" defaultValue="0" className="w-full px-3 py-2 border rounded-lg text-sm" />
+                        </div>
+                        <div className="flex items-end">
+                          <button type="submit" className="w-full px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium">
+                            追加
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex justify-end p-4 border-t">
+                  <button onClick={() => setShowShiftManager(false)} className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm">閉じる</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          );
+        })()}
 
         {/* 夜勤NG組み合わせモーダル */}
         {showNightNgPairs && (
