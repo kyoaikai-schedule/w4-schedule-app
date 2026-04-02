@@ -323,7 +323,8 @@ const WardScheduleSystem = () => {
     weekendDayStaff: 5, // 土日の日勤者数（厳格: 5人）
     yearEndDayStaff: 4, // 年末（12/30-31）の日勤者数
     newYearDayStaff: 4,  // 年始（1/1-3）の日勤者数
-    excludeMgmtFromNightCount: false  // 管理当直（管夜/管明）を夜勤回数カウントから除外
+    excludeMgmtFromNightCount: false,  // 管理当直（管夜/管明）を夜勤回数カウントから除外
+    maxDoubleNightPairs: 2  // 連続夜勤ペア（夜明夜明）の月間上限
   });
   
   // 前月データ関連（確定済み）
@@ -1235,6 +1236,28 @@ const WardScheduleSystem = () => {
       return false;
     };
 
+    const countDoubleNightPairs = (schedule: any, nurseId: number) => {
+      let count = 0;
+      const shifts = schedule[nurseId];
+      if (!shifts) return 0;
+      for (let d = 0; d < shifts.length - 3; d++) {
+        if (isNightShift(shifts[d]) && isAkeShift(shifts[d+1]) && isNightShift(shifts[d+2]) && isAkeShift(shifts[d+3])) {
+          count++;
+          d += 3; // 重複カウント防止
+        }
+      }
+      return count;
+    };
+
+    const wouldExceedDoubleNightLimit = (schedule: any, nurseId: number, day: number) => {
+      if (cfg.maxDoubleNightPairs <= 0) return false;
+      // この日に夜勤を入れた場合、2日前に夜勤があれば新たなペアになる
+      if (day >= 2 && isNightShift(schedule[nurseId][day - 2]) && isAkeShift(schedule[nurseId][day - 1])) {
+        if (countDoubleNightPairs(schedule, nurseId) >= cfg.maxDoubleNightPairs) return true;
+      }
+      return false;
+    };
+
     const getDayStaffReq = (day: number) => {
       if (isYearEnd(day)) return generateConfig.yearEndDayStaff;
       if (isNewYear(day)) return generateConfig.newYearDayStaff;
@@ -1272,6 +1295,7 @@ const WardScheduleSystem = () => {
       maxDaysOff: generateConfig.maxDaysOff,
       maxConsec: generateConfig.maxConsecutiveDays,
       excludeMgmtFromNightCount: generateConfig.excludeMgmtFromNightCount,
+      maxDoubleNightPairs: generateConfig.maxDoubleNightPairs,
     };
 
     // 夜勤カウント用ヘルパー（管理当直除外オプション対応）
@@ -1427,12 +1451,19 @@ const WardScheduleSystem = () => {
           if (day + 1 < daysInMonth && isLocked(n.id, day + 1) && exReqs[n.id]?.[day + 1] && exReqs[n.id][day + 1] !== '明') return false;
           if (day > 0 && isNightShift(sc[n.id][day - 1])) return false;
           if (wouldBeTripleNight(sc, n.id, day)) return false;
+          if (wouldExceedDoubleNightLimit(sc, n.id, day)) return false;
           if (consecBefore(sc, n.id, day) >= cfg.maxConsec) return false;
           if (hasNightNgConflict(sc, n.id, day)) return false;
           return true;
         }).sort((a, b) => {
           const d = st[a.id].nightCount - st[b.id].nightCount;
           if (d !== 0) return d;
+          // 最後の夜勤日からの距離（遠い人を優先）
+          const lastNightA = (() => { for (let i = day - 1; i >= 0; i--) { if (isNightShift(sc[a.id][i])) return i; } return -10; })();
+          const lastNightB = (() => { for (let i = day - 1; i >= 0; i--) { if (isNightShift(sc[b.id][i])) return i; } return -10; })();
+          const distA = day - lastNightA;
+          const distB = day - lastNightB;
+          if (distA !== distB) return distB - distA;
           return isSp ? st[a.id].weekendWork - st[b.id].weekendWork : st[a.id].totalWork - st[b.id].totalWork;
         });
 
@@ -1738,9 +1769,16 @@ const WardScheduleSystem = () => {
           const mx = pr?.maxNightShifts ?? cfg.maxNightShifts;
           if (adj[n.id].filter((s: any) => isCountableNight(s)).length >= mx) return false;
           if (wouldBeTripleNight(adj, n.id, day)) return false;
+          if (wouldExceedDoubleNightLimit(adj, n.id, day)) return false;
           if (hasNightNgConflict(adj, n.id, day)) return false;
           return true;
-        }).sort((a, b) => adj[a.id].filter((s: any) => isCountableNight(s)).length - adj[b.id].filter((s: any) => isCountableNight(s)).length);
+        }).sort((a, b) => {
+          const d = adj[a.id].filter((s: any) => isCountableNight(s)).length - adj[b.id].filter((s: any) => isCountableNight(s)).length;
+          if (d !== 0) return d;
+          const lastNightA = (() => { for (let i = day - 1; i >= 0; i--) { if (isNightShift(adj[a.id][i])) return i; } return -10; })();
+          const lastNightB = (() => { for (let i = day - 1; i >= 0; i--) { if (isNightShift(adj[b.id][i])) return i; } return -10; })();
+          return (day - lastNightB) - (day - lastNightA);
+        });
         if (cands.length === 0) break;
         const pk = cands[0];
         adj[pk.id][day] = '夜';
@@ -1812,8 +1850,15 @@ const WardScheduleSystem = () => {
         const c = generationNurses.filter(n => !isNightShift(adj[n.id][day]) && !isAkeShift(adj[n.id][day]) && !isLocked(n.id, day) && !(day > 0 && isNightShift(adj[n.id][day-1])) && !(day+1 < daysInMonth && isNightShift(adj[n.id][day+1])) && !nurseShiftPrefs[n.id]?.noNightShift && adj[n.id].filter((s: any) => isCountableNight(s)).length < (nurseShiftPrefs[n.id]?.maxNightShifts ?? cfg.maxNightShifts)
           && !(day + 1 < daysInMonth && isLocked(n.id, day + 1) && exReqs[n.id]?.[day + 1] && exReqs[n.id][day + 1] !== '明')
           && !wouldBeTripleNight(adj, n.id, day)
+          && !wouldExceedDoubleNightLimit(adj, n.id, day)
           && !hasNightNgConflict(adj, n.id, day))
-          .sort((a, b) => adj[a.id].filter((s: any) => isCountableNight(s)).length - adj[b.id].filter((s: any) => isCountableNight(s)).length);
+          .sort((a, b) => {
+            const d = adj[a.id].filter((s: any) => isCountableNight(s)).length - adj[b.id].filter((s: any) => isCountableNight(s)).length;
+            if (d !== 0) return d;
+            const lastNightA = (() => { for (let i = day - 1; i >= 0; i--) { if (isNightShift(adj[a.id][i])) return i; } return -10; })();
+            const lastNightB = (() => { for (let i = day - 1; i >= 0; i--) { if (isNightShift(adj[b.id][i])) return i; } return -10; })();
+            return (day - lastNightB) - (day - lastNightA);
+          });
         if (c.length === 0) break;
         adj[c[0].id][day] = '夜';
         if (day + 1 < daysInMonth && !isLocked(c[0].id, day + 1)) adj[c[0].id][day + 1] = '明';
@@ -1886,9 +1931,16 @@ const WardScheduleSystem = () => {
           const mx = pr?.maxNightShifts ?? cfg.maxNightShifts;
           if (adj[n.id].filter((s: any) => isCountableNight(s)).length >= mx) return false;
           if (wouldBeTripleNight(adj, n.id, day)) return false;
+          if (wouldExceedDoubleNightLimit(adj, n.id, day)) return false;
           if (hasNightNgConflict(adj, n.id, day)) return false;
           return true;
-        }).sort((a, b) => adj[a.id].filter((s: any) => isCountableNight(s)).length - adj[b.id].filter((s: any) => isCountableNight(s)).length);
+        }).sort((a, b) => {
+          const d = adj[a.id].filter((s: any) => isCountableNight(s)).length - adj[b.id].filter((s: any) => isCountableNight(s)).length;
+          if (d !== 0) return d;
+          const lastNightA = (() => { for (let i = day - 1; i >= 0; i--) { if (isNightShift(adj[a.id][i])) return i; } return -10; })();
+          const lastNightB = (() => { for (let i = day - 1; i >= 0; i--) { if (isNightShift(adj[b.id][i])) return i; } return -10; })();
+          return (day - lastNightB) - (day - lastNightA);
+        });
 
         if (cands.length === 0) break;
         const pk = cands[0];
@@ -2084,9 +2136,16 @@ const WardScheduleSystem = () => {
           const mx = pr?.maxNightShifts ?? cfg.maxNightShifts;
           if (adj[n.id].filter((s: any) => isCountableNight(s)).length >= mx) return false;
           if (wouldBeTripleNight(adj, n.id, day)) return false;
+          if (wouldExceedDoubleNightLimit(adj, n.id, day)) return false;
           if (hasNightNgConflict(adj, n.id, day)) return false;
           return true;
-        }).sort((a, b) => adj[a.id].filter((s: any) => isCountableNight(s)).length - adj[b.id].filter((s: any) => isCountableNight(s)).length);
+        }).sort((a, b) => {
+          const d = adj[a.id].filter((s: any) => isCountableNight(s)).length - adj[b.id].filter((s: any) => isCountableNight(s)).length;
+          if (d !== 0) return d;
+          const lastNightA = (() => { for (let i = day - 1; i >= 0; i--) { if (isNightShift(adj[a.id][i])) return i; } return -10; })();
+          const lastNightB = (() => { for (let i = day - 1; i >= 0; i--) { if (isNightShift(adj[b.id][i])) return i; } return -10; })();
+          return (day - lastNightB) - (day - lastNightA);
+        });
 
         // 第1候補が見つからない場合、緩和条件で再検索（夜勤上限を+1まで許容）
         if (cands.length === 0) {
@@ -2101,9 +2160,16 @@ const WardScheduleSystem = () => {
             const mx = (pr?.maxNightShifts ?? cfg.maxNightShifts) + 1;
             if (adj[n.id].filter((s: any) => isCountableNight(s)).length >= mx) return false;
             if (wouldBeTripleNight(adj, n.id, day)) return false;
+            if (wouldExceedDoubleNightLimit(adj, n.id, day)) return false;
             if (hasNightNgConflict(adj, n.id, day)) return false;
             return true;
-          }).sort((a, b) => adj[a.id].filter((s: any) => isCountableNight(s)).length - adj[b.id].filter((s: any) => isCountableNight(s)).length);
+          }).sort((a, b) => {
+            const d = adj[a.id].filter((s: any) => isCountableNight(s)).length - adj[b.id].filter((s: any) => isCountableNight(s)).length;
+            if (d !== 0) return d;
+            const lastNightA = (() => { for (let i = day - 1; i >= 0; i--) { if (isNightShift(adj[a.id][i])) return i; } return -10; })();
+            const lastNightB = (() => { for (let i = day - 1; i >= 0; i--) { if (isNightShift(adj[b.id][i])) return i; } return -10; })();
+            return (day - lastNightB) - (day - lastNightA);
+          });
         }
 
         if (cands.length === 0) break;
@@ -2803,7 +2869,6 @@ const WardScheduleSystem = () => {
               職員用（休み希望入力）
             </button>
           </div>
-
 
           <p className="text-center text-xs text-gray-400 mt-8">
             データはサーバーに安全に保存されます
@@ -5944,7 +6009,7 @@ const WardScheduleSystem = () => {
                                 }}
                                 className="px-2 py-1 border rounded text-center w-20"
                               >
-                                {Array.from({ length: 16 }, (_, i) => (
+                                {Array.from({ length: 21 }, (_, i) => (
                                   <option key={i} value={i}>{i === 0 ? '無制限' : `${i}個`}</option>
                                 ))}
                               </select>
@@ -6159,6 +6224,20 @@ const WardScheduleSystem = () => {
                         <span className="text-sm font-medium text-gray-700">管理当直（管夜/管明）を夜勤回数カウントから除外する</span>
                       </label>
                       <p className="text-xs text-gray-500 ml-7 mt-1">チェックすると管理当直は夜勤回数の統計・上限チェックに含まれません</p>
+                    </div>
+
+                    <div className="col-span-3 mt-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">連続夜勤ペア（夜明夜明）の月間上限</label>
+                      <select
+                        value={generateConfig.maxDoubleNightPairs}
+                        onChange={(e) => setGenerateConfig(prev => ({ ...prev, maxDoubleNightPairs: parseInt(e.target.value) }))}
+                        className="w-full px-3 py-2 border-2 rounded-lg"
+                      >
+                        {[0, 1, 2, 3, 4, 5].map(n => (
+                          <option key={n} value={n}>{n === 0 ? '制限なし' : `${n}回`}</option>
+                        ))}
+                      </select>
+                      <p className="text-xs text-gray-500 mt-1">1人の職員に「夜明夜明」パターンが月内で何回まで許されるかの上限</p>
                     </div>
                   </div>
 
