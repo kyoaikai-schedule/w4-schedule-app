@@ -1039,6 +1039,14 @@ const WardScheduleSystem = () => {
     const constraints = calculateConstraintsFromData(confirmedData);
     setPrevMonthConstraints(constraints);
 
+    // 連続勤務日数のログ出力
+    const consecLog = activeNurses
+      .filter(n => constraints[n.id]?._consecDays > 0)
+      .map(n => `${n.name}: ${constraints[n.id]._consecDays}日`);
+    if (consecLog.length > 0) {
+      console.log('前月末の連続勤務日数:', consecLog.join(', '));
+    }
+
     // Supabaseに保存（月別キー）
     const pmKey = `prevMonth-${targetYear}-${targetMonth}`;
     saveWithStatus(async () => {
@@ -1165,8 +1173,20 @@ const WardScheduleSystem = () => {
         constraints[nurse.id][1] = '休';  // 1日目
       }
       // それ以外 → 制約なし
+
+      // ★追加: 前月末の連続勤務日数を計算
+      let consecCount = 0;
+      for (let i = shifts.length - 1; i >= 0; i--) {
+        const s = normalizeShift(shifts[i]);
+        if (s && s !== '休' && s !== '有' && s !== '午前半' && s !== '午後半' && s !== '明' && s !== '管明') {
+          consecCount++;
+        } else {
+          break;
+        }
+      }
+      constraints[nurse.id]._consecDays = consecCount;
     });
-    
+
     return constraints;
   };
   // 氏名を正規化（スペースの統一）
@@ -1318,11 +1338,25 @@ const WardScheduleSystem = () => {
 
     // 連続勤務ヘルパー
     const consecBefore = (sc: any, nid: number, day: number) => {
-      let c = 0; for (let d = day - 1; d >= 0; d--) { if (isWorkShift(sc[nid][d])) c++; else break; } return c;
+      let c = 0;
+      for (let d = day - 1; d >= 0; d--) { if (isWorkShift(sc[nid][d])) c++; else break; }
+      // 月初まで全て勤務なら前月末の連続勤務日数を加算
+      if (day === 0 || (c === day)) {
+        const prevConsec = (prevMonthConstraints as any)[nid]?._consecDays || 0;
+        c += prevConsec;
+      }
+      return c;
     };
     const consecAround = (sc: any, nid: number, day: number) => {
-      let b = 0; for (let d = day - 1; d >= 0; d--) { if (isWorkShift(sc[nid][d])) b++; else break; }
-      let a = 0; for (let d = day + 1; d < daysInMonth; d++) { if (isWorkShift(sc[nid][d])) a++; else break; }
+      let b = 0;
+      for (let d = day - 1; d >= 0; d--) { if (isWorkShift(sc[nid][d])) b++; else break; }
+      // 月初まで全て勤務なら前月末の連続日数を加算
+      if (day === 0 || (b === day)) {
+        const prevConsec = (prevMonthConstraints as any)[nid]?._consecDays || 0;
+        b += prevConsec;
+      }
+      let a = 0;
+      for (let d = day + 1; d < daysInMonth; d++) { if (isWorkShift(sc[nid][d])) a++; else break; }
       return b + 1 + a;
     };
 
@@ -5740,6 +5774,7 @@ const WardScheduleSystem = () => {
                     <li>• 前月末が夜勤 → 1日目は夜勤明け、2日目は休み</li>
                     <li>• 前月末が夜勤明け → 1日目は休み</li>
                     <li>• 連続勤務4日以上 → 1日目は休み</li>
+                    <li>• 前月末の連続勤務日数を翌月に引き継ぎます（最大連続勤務日数の制約に反映）</li>
                   </ul>
                 </div>
                 
