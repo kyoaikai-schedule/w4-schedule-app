@@ -324,6 +324,8 @@ const WardScheduleSystem = () => {
   const [newNurseData, setNewNurseData] = useState({ name: '', position: '一般' });
   const [generating, setGenerating] = useState(false);
   const [generatingPhase, setGeneratingPhase] = useState('');
+  const [generatedPatterns, setGeneratedPatterns] = useState<any[]>([]);
+  const [showPatternSelect, setShowPatternSelect] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null); // 削除確認用
   const [showGenerateConfig, setShowGenerateConfig] = useState(false); // 生成設定モーダル
   const [isMaximized, setIsMaximized] = useState(false); // 勤務表最大化
@@ -1799,6 +1801,9 @@ const WardScheduleSystem = () => {
       return sc;
     };
 
+    // 1パターン分の生成を実行する内部関数
+    const runOneGeneration = async (patternIndex: number) => {
+
     // 複数候補から最良選択
     let bestSc: any = null;
     let bestScore = -Infinity;
@@ -1834,7 +1839,7 @@ const WardScheduleSystem = () => {
     };
 
     for (let i = 0; i < 30; i++) {
-      const sc = buildBase(i * 12345 + Date.now());
+      const sc = buildBase(i * 12345 + Date.now() + patternIndex * 99999);
       const s = scoreFn(sc);
       if (s > bestScore) { bestScore = s; bestSc = sc; }
     }
@@ -2595,27 +2600,63 @@ const WardScheduleSystem = () => {
     console.log('【検証レポート】');
     report.forEach(r => console.log(r));
 
-    const alertLines = report.filter(r => r.startsWith('⚠️'));
-    const statLines = report.filter(r => r.startsWith('📊') || r.startsWith('✅') || r.startsWith('⏭️'));
-    if (hasViolation) {
-      alert('⚠️ 一部制約違反があります:\n\n' + alertLines.join('\n') + '\n\n' + statLines.join('\n') + '\n\n手動で調整してください。');
-    } else {
-      alert('✅ 全制約クリア！\n\n' + statLines.join('\n'));
+    // metrics計算
+    const nightCounts = generationNurses.map(n => final[n.id].filter((s: any) => isNightShift(s)).length);
+    const nightAvg = nightCounts.length > 0 ? nightCounts.reduce((a: number, b: number) => a + b, 0) / nightCounts.length : 0;
+    const nightBalance = nightCounts.length > 0 ? Math.sqrt(nightCounts.reduce((sum: number, c: number) => sum + (c - nightAvg) ** 2, 0) / nightCounts.length) : 0;
+
+    let dayShortage = 0, nightShortageM = 0;
+    for (let d = 0; d < daysInMonth; d++) {
+      let dc = 0, nc = 0;
+      generationNurses.forEach(n => { if (final[n.id][d] === '日') dc++; if (isNightShift(final[n.id][d])) nc++; });
+      dayShortage += Math.max(0, getDayStaffReq(d) - dc);
+      nightShortageM += Math.max(0, getNightReq(d) - nc);
     }
 
-    setSchedule({ month: monthKey, data: final });
-    saveWithStatus(async () => {
-      await saveSchedulesToDB(targetYear, targetMonth, final);
-      saveScheduleToLocalStorage(final);
+    let consecViolations = 0;
+    generationNurses.forEach(n => {
+      let c = 0;
+      for (let d = 0; d < daysInMonth; d++) { if (isWorkShift(final[n.id][d])) { c++; if (c > cfg.maxConsec) consecViolations++; } else c = 0; }
     });
-    insertAuditLog({
-      action: 'schedule_generate',
-      user_type: 'admin',
-      year: targetYear, month: targetMonth,
-      details: `${targetYear}年${targetMonth + 1}月 勤務表自動生成（${generationNurses.length}名、除外${excludedNurses.length}名）`,
-    });
+
+    const offCounts = generationNurses.map(n => final[n.id].filter((s: any) => isOff(s)).length);
+    const avgDaysOff = offCounts.length > 0 ? offCounts.reduce((a: number, b: number) => a + b, 0) / offCounts.length : 0;
+
+    const metrics = {
+      totalScore: scoreFn(final),
+      nightBalance,
+      dayShortage,
+      nightShortage: nightShortageM,
+      consecViolations,
+      requestMatch: reqTotal > 0 ? Math.round(reqMet / reqTotal * 100) : 100,
+      avgDaysOff: Math.round(avgDaysOff * 10) / 10,
+    };
+
+    return { data: final, score: metrics.totalScore, metrics, report };
+
+    }; // end of runOneGeneration
+
+    // ========== 3パターン生成 ==========
+    setGeneratingPhase('パターン 1/3 生成中...');
+    await tick();
+    const p1 = await runOneGeneration(0);
+    setGeneratingPhase('パターン 2/3 生成中...');
+    await tick();
+    const p2 = await runOneGeneration(1);
+    setGeneratingPhase('パターン 3/3 生成中...');
+    await tick();
+    const p3 = await runOneGeneration(2);
+
+    const patterns = [
+      { ...p1, label: 'パターンA' },
+      { ...p2, label: 'パターンB' },
+      { ...p3, label: 'パターンC' },
+    ].sort((a, b) => b.score - a.score);
+
+    setGeneratedPatterns(patterns);
     setGenerating(false);
     setGeneratingPhase('');
+    setShowPatternSelect(true);
   };
 
   // Excel用セルスタイル（シフト種別ごとの背景色・文字色）
@@ -6528,6 +6569,75 @@ const WardScheduleSystem = () => {
         )}
 
         {/* 勤務表生成設定モーダル */}
+        {/* パターン選択モーダル */}
+        {showPatternSelect && generatedPatterns.length > 0 && (
+          <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
+            <div className="min-h-full flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl">
+                <div className="flex items-center justify-between p-6 border-b">
+                  <h3 className="text-xl font-bold text-gray-800">生成結果の比較（3パターン）</h3>
+                  <button type="button" onClick={() => { setShowPatternSelect(false); setGeneratedPatterns([]); }} className="p-2 hover:bg-gray-100 rounded-full"><X size={20} /></button>
+                </div>
+                <div className="p-6">
+                  <p className="text-sm text-gray-600 mb-4">3つのパターンを比較して、最適なものを選択してください。</p>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {generatedPatterns.map((pat, idx) => {
+                      const m = pat.metrics;
+                      const isBest = idx === 0;
+                      const nightStars = m.nightBalance < 0.5 ? '★★★' : m.nightBalance < 1.0 ? '★★' : '★';
+                      const dayStars = m.dayShortage === 0 ? '★★★' : m.dayShortage <= 3 ? '★★' : '★';
+                      const nightFillStars = m.nightShortage === 0 ? '★★★' : m.nightShortage <= 2 ? '★★' : '★';
+                      return (
+                        <div key={idx} className={`border-2 rounded-xl p-4 ${isBest ? 'border-green-400 bg-green-50/30' : 'border-gray-200'}`}>
+                          <div className="flex items-center justify-between mb-3">
+                            <h4 className="font-bold text-lg">{pat.label}</h4>
+                            {isBest && <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-bold">おすすめ</span>}
+                          </div>
+                          <div className="space-y-2 text-sm">
+                            <div className="flex justify-between"><span className="text-gray-600">総合スコア</span><span className="font-bold">{Math.round(m.totalScore).toLocaleString()}</span></div>
+                            <div className="flex justify-between"><span className="text-gray-600">夜勤均等度</span><span className="font-bold text-yellow-600">{nightStars} <span className="text-xs text-gray-400">({m.nightBalance.toFixed(2)})</span></span></div>
+                            <div className="flex justify-between"><span className="text-gray-600">日勤充足</span><span className="font-bold text-yellow-600">{dayStars} <span className="text-xs text-gray-400">(不足{m.dayShortage})</span></span></div>
+                            <div className="flex justify-between"><span className="text-gray-600">夜勤充足</span><span className="font-bold text-yellow-600">{nightFillStars} <span className="text-xs text-gray-400">(不足{m.nightShortage})</span></span></div>
+                            <div className="flex justify-between"><span className="text-gray-600">希望一致率</span><span className="font-bold">{m.requestMatch}%</span></div>
+                            <div className="flex justify-between"><span className="text-gray-600">連続勤務違反</span><span className={`font-bold ${m.consecViolations === 0 ? 'text-green-600' : 'text-red-600'}`}>{m.consecViolations === 0 ? '✅ 0' : `⚠️ ${m.consecViolations}`}</span></div>
+                            <div className="flex justify-between"><span className="text-gray-600">平均休日数</span><span className="font-bold">{m.avgDaysOff}日</span></div>
+                          </div>
+                          <button
+                            onClick={() => {
+                              const monthKey = `${targetYear}-${targetMonth}`;
+                              setSchedule({ month: monthKey, data: pat.data });
+                              saveWithStatus(async () => {
+                                await saveSchedulesToDB(targetYear, targetMonth, pat.data);
+                                saveScheduleToLocalStorage(pat.data);
+                              });
+                              insertAuditLog({ action: 'schedule_generate', user_type: 'admin', year: targetYear, month: targetMonth, details: `${pat.label}を採用` });
+                              setShowPatternSelect(false);
+                              setGeneratedPatterns([]);
+                              const alertLines = pat.report.filter((r: string) => r.startsWith('⚠️'));
+                              const statLines = pat.report.filter((r: string) => r.startsWith('📊') || r.startsWith('✅') || r.startsWith('⏭️'));
+                              if (alertLines.length > 0) {
+                                alert('⚠️ 一部制約違反があります:\n\n' + alertLines.join('\n') + '\n\n' + statLines.join('\n'));
+                              } else {
+                                alert('✅ 全制約クリア！\n\n' + statLines.join('\n'));
+                              }
+                            }}
+                            className={`w-full mt-4 px-4 py-2.5 rounded-lg font-bold text-sm transition-colors ${isBest ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'}`}
+                          >
+                            このパターンを採用
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="flex justify-end p-4 border-t">
+                  <button onClick={() => { setShowPatternSelect(false); setGeneratedPatterns([]); }} className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg text-sm">キャンセル</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {showGenerateConfig && (
           <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
             <div className="min-h-full flex items-center justify-center p-4">
