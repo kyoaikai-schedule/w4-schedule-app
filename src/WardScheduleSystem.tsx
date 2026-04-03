@@ -728,6 +728,134 @@ const WardScheduleSystem = () => {
     })), [activeNurses]);
 
   // ============================================
+  // ルール違反リアルタイムチェック
+  // ============================================
+
+  const [showViolations, setShowViolations] = useState(false);
+
+  type Violation = {
+    nurseId: number;
+    day: number;
+    type: string;
+    message: string;
+    severity: 'error' | 'warning';
+  };
+
+  const violations = useMemo(() => {
+    if (!schedule?.data) return [] as Violation[];
+    const v: Violation[] = [];
+    const data = schedule.data;
+    const cfgV = {
+      maxConsec: generateConfig.maxConsecutiveDays,
+      maxNightShifts: generateConfig.maxNightShifts,
+      maxDoubleNightPairs: (generateConfig as any).maxDoubleNightPairs ?? 2,
+      weekdayDayStaff: generateConfig.weekdayDayStaff,
+      weekendDayStaff: generateConfig.weekendDayStaff,
+    };
+
+    const isNight = (s: any) => s === '夜' || s === '管夜';
+    const isAke = (s: any) => s === '明' || s === '管明';
+    const isOffV = (s: any) => s === '休' || s === '有' || (s && allShifts[s]?.category === 'off');
+    const isWorkV = (s: any) => s && !isOffV(s) && !isAke(s) && allShifts[s]?.category !== 'half_off';
+
+    activeNurses.forEach(nurse => {
+      const shifts = data[nurse.id];
+      if (!shifts) return;
+      const pr = nurseShiftPrefs[nurse.id];
+
+      for (let d = 0; d < daysInMonth; d++) {
+        const s = shifts[d];
+        if (!s) continue;
+
+        // 1. 連続勤務日数超過
+        if (isWorkV(s)) {
+          let consec = 1;
+          for (let b = d - 1; b >= 0; b--) { if (isWorkV(shifts[b])) consec++; else break; }
+          for (let a = d + 1; a < daysInMonth; a++) { if (isWorkV(shifts[a])) consec++; else break; }
+          let prevConsec = 0;
+          if (d === 0 || ((() => { let c = 0; for (let b = d - 1; b >= 0; b--) { if (isWorkV(shifts[b])) c++; else break; } return c; })() === d)) {
+            prevConsec = (prevMonthConstraints as any)[nurse.id]?._consecDays || 0;
+          }
+          if (consec + prevConsec > cfgV.maxConsec) {
+            v.push({ nurseId: nurse.id, day: d, type: 'consec', message: `連続勤務${consec + prevConsec}日（上限${cfgV.maxConsec}日）`, severity: 'error' });
+          }
+        }
+
+        // 2. 夜勤の翌日が明でない
+        if (isNight(s) && d + 1 < daysInMonth && !isAke(shifts[d + 1])) {
+          v.push({ nurseId: nurse.id, day: d, type: 'no_ake', message: '夜勤の翌日が明けでない', severity: 'error' });
+        }
+
+        // 3. 明の翌日が休でない
+        if (isAke(s) && d + 1 < daysInMonth && shifts[d + 1] && !isOffV(shifts[d + 1])) {
+          v.push({ nurseId: nurse.id, day: d, type: 'no_rest_after_ake', message: '明けの翌日が休みでない', severity: 'warning' });
+        }
+
+        // 4. 3連夜勤
+        if (isNight(s) && d >= 4 && isNight(shifts[d - 4]) && isAke(shifts[d - 3]) && isNight(shifts[d - 2]) && isAke(shifts[d - 1])) {
+          v.push({ nurseId: nurse.id, day: d, type: 'triple_night', message: '3連夜勤', severity: 'error' });
+        }
+
+        // 5. 夜勤NG組み合わせ
+        if (isNight(s)) {
+          nightNgPairs.forEach(([a, b]) => {
+            if (a === nurse.id || b === nurse.id) {
+              const partnerId = a === nurse.id ? b : a;
+              if (isNight(data[partnerId]?.[d])) {
+                const partnerName = activeNurses.find(n => n.id === partnerId)?.name || '';
+                v.push({ nurseId: nurse.id, day: d, type: 'ng_pair', message: `NGペア: ${partnerName}と同時夜勤`, severity: 'error' });
+              }
+            }
+          });
+        }
+      }
+
+      // 6. 夜勤回数上限超過
+      const nightCount = shifts.filter((s: any) => isNight(s)).length;
+      const mx = pr?.noNightShift ? 0 : (pr?.maxNightShifts ?? cfgV.maxNightShifts);
+      if (nightCount > mx) {
+        v.push({ nurseId: nurse.id, day: -1, type: 'night_over', message: `夜勤${nightCount}回（上限${mx}回）`, severity: 'warning' });
+      }
+
+      // 7. 2連夜勤ペア月間上限超過
+      if (cfgV.maxDoubleNightPairs > 0) {
+        let doubleCount = 0;
+        for (let d = 0; d < daysInMonth - 3; d++) {
+          if (isNight(shifts[d]) && isAke(shifts[d+1]) && isNight(shifts[d+2]) && isAke(shifts[d+3])) {
+            doubleCount++; d += 3;
+          }
+        }
+        if (doubleCount > cfgV.maxDoubleNightPairs) {
+          v.push({ nurseId: nurse.id, day: -1, type: 'double_night_over', message: `2連夜勤${doubleCount}回（上限${cfgV.maxDoubleNightPairs}回）`, severity: 'warning' });
+        }
+      }
+    });
+
+    // 8. 日別の人数チェック
+    const holidayListV = getJapaneseHolidays(targetYear, targetMonth);
+    for (let d = 0; d < daysInMonth; d++) {
+      let dayCount = 0, nightCountD = 0;
+      activeNurses.forEach(n => {
+        const s = data[n.id]?.[d];
+        if (s === '日') dayCount++;
+        if (isNight(s)) nightCountD++;
+      });
+      const dow = new Date(targetYear, targetMonth, d + 1).getDay();
+      const isHolidayD = dow === 0 || dow === 6 || holidayListV.includes(d + 1);
+      const reqDay = isHolidayD ? cfgV.weekendDayStaff : cfgV.weekdayDayStaff;
+      if (dayCount < reqDay) {
+        v.push({ nurseId: -1, day: d, type: 'day_short', message: `日勤${dayCount}人（必要${reqDay}人）`, severity: 'warning' });
+      }
+    }
+
+    return v;
+  }, [schedule, generateConfig, activeNurses, nurseShiftPrefs, nightNgPairs, prevMonthConstraints, daysInMonth, targetYear, targetMonth, allShifts]);
+
+  const getViolationsForCell = (nurseId: number, day: number) => violations.filter(v => v.nurseId === nurseId && v.day === day);
+  const getViolationsForNurse = (nurseId: number) => violations.filter(v => v.nurseId === nurseId && v.day === -1);
+  const getViolationsForDay = (day: number) => violations.filter(v => v.nurseId === -1 && v.day === day);
+
+  // ============================================
   // バージョン管理機能
   // ============================================
 
@@ -4892,7 +5020,56 @@ const WardScheduleSystem = () => {
               </div>
             </div>
             )}
-            
+
+            {violations.length > 0 && (
+              <div className="mb-2">
+                <button
+                  onClick={() => setShowViolations(!showViolations)}
+                  className="px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 rounded-lg text-sm font-medium flex items-center gap-1"
+                >
+                  <AlertCircle size={14} />
+                  ルール違反 {violations.length}件
+                  {showViolations ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                </button>
+                {showViolations && (
+                  <div className="mt-2 bg-white border border-red-200 rounded-xl p-4 max-h-[30vh] overflow-y-auto">
+                    {(() => {
+                      const errors = violations.filter(v => v.severity === 'error');
+                      const warnings = violations.filter(v => v.severity === 'warning');
+                      return (
+                        <div className="space-y-3">
+                          {errors.length > 0 && (
+                            <div>
+                              <h5 className="text-sm font-bold text-red-700 mb-1">エラー（{errors.length}件）</h5>
+                              <ul className="space-y-0.5">
+                                {errors.map((e, i) => {
+                                  const name = e.nurseId > 0 ? activeNurses.find(n => n.id === e.nurseId)?.name || '' : '';
+                                  const dayStr = e.day >= 0 ? `${e.day + 1}日` : '';
+                                  return <li key={i} className="text-xs text-red-600">• {name} {dayStr} {e.message}</li>;
+                                })}
+                              </ul>
+                            </div>
+                          )}
+                          {warnings.length > 0 && (
+                            <div>
+                              <h5 className="text-sm font-bold text-orange-600 mb-1">警告（{warnings.length}件）</h5>
+                              <ul className="space-y-0.5">
+                                {warnings.map((w, i) => {
+                                  const name = w.nurseId > 0 ? activeNurses.find(n => n.id === w.nurseId)?.name || '' : '';
+                                  const dayStr = w.day >= 0 ? `${w.day + 1}日` : '';
+                                  return <li key={i} className="text-xs text-orange-600">• {name} {dayStr} {w.message}</li>;
+                                })}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className={`overflow-auto border rounded-lg ${isMaximized ? 'max-h-[calc(100vh-52px)]' : 'max-h-[70vh]'}`}>
               <table className={`w-full border-collapse ${isMaximized ? 'text-[11px]' : 'text-sm'}`}>
                 <thead className="sticky top-0 z-20">
@@ -4904,10 +5081,12 @@ const WardScheduleSystem = () => {
                       const holidayList = getJapaneseHolidays(targetYear, targetMonth);
                       const isNationalHoliday = holidayList.includes(day);
                       const isHoliday = dow === '日' || dow === '土' || isNationalHoliday;
+                      const dayViolations = getViolationsForDay(i);
                       return (
                         <th
                           key={day}
-                          className={`border ${isMaximized ? 'px-0 py-0 min-w-[20px]' : 'p-1 min-w-[32px]'} ${isHoliday ? 'bg-red-50' : 'bg-gray-100'}`}
+                          title={dayViolations.length > 0 ? dayViolations.map(v => v.message).join('\n') : undefined}
+                          className={`border ${isMaximized ? 'px-0 py-0 min-w-[20px]' : 'p-1 min-w-[32px]'} ${isHoliday ? 'bg-red-50' : 'bg-gray-100'} ${dayViolations.length > 0 ? 'border-b-2 border-b-red-400' : ''}`}
                         >
                           <div className={`${isMaximized ? 'text-[9px] leading-none' : 'text-xs'} ${dow === '日' || isNationalHoliday ? 'text-red-500' : dow === '土' ? 'text-blue-500' : ''}`}>
                             {dow}
@@ -4946,6 +5125,7 @@ const WardScheduleSystem = () => {
                           {!isMaximized && nurseShiftPrefs[nurse.id]?.noNightShift && <span className="ml-1 text-[10px] bg-purple-100 text-purple-600 px-1 rounded">夜×</span>}
                           {!isMaximized && nurseShiftPrefs[nurse.id]?.noDayShift && <span className="ml-1 text-[10px] bg-blue-100 text-blue-600 px-1 rounded">日×</span>}
                           {!isMaximized && nurseShiftPrefs[nurse.id]?.excludeFromMaxDaysOff && <span className="ml-1 text-[10px] bg-orange-100 text-orange-600 px-1 rounded">休除外</span>}
+                          {(() => { const nv = getViolationsForNurse(nurse.id); return nv.length > 0 ? <span title={nv.map(v => v.message).join('\n')} className="ml-1 text-[10px] bg-red-500 text-white px-1 rounded-full">{nv.length}</span> : null; })()}
                         </td>
                         {shifts.map((shift: any, i: number) => {
                           const day = i + 1;
@@ -4957,11 +5137,16 @@ const WardScheduleSystem = () => {
                           const matchesRequest = reqVal && shift === reqVal;
                           const differsFromRequest = reqVal && shift !== reqVal;
                           const differsFromPrev = prevCon && shift !== prevCon;
+                          const cellViolations = getViolationsForCell(nurse.id, i);
+                          const hasError = cellViolations.some(v => v.severity === 'error');
+                          const hasWarning = !hasError && cellViolations.some(v => v.severity === 'warning');
+                          const violationTitle = cellViolations.map(v => v.message).join('\n');
                           return (
                           <td
                             key={i}
                             onClick={() => handleCellClick(nurse.id, i, sanitizeShiftLocal(shift))}
-                            className={`border text-center cursor-pointer hover:bg-blue-50 transition-colors ${isMaximized ? 'px-0 py-px' : 'p-1'} ${allShifts[shift]?.color || ''} ${
+                            title={violationTitle || undefined}
+                            className={`border text-center cursor-pointer hover:bg-blue-50 transition-colors relative ${isMaximized ? 'px-0 py-px' : 'p-1'} ${allShifts[shift]?.color || ''} ${
                               matchesRequest ? 'border-2 border-green-500' :
                               differsFromRequest ? 'border-2 border-red-400' :
                               differsFromPrev ? 'border-2 border-orange-400' : ''
@@ -4969,6 +5154,9 @@ const WardScheduleSystem = () => {
                             style={{ minWidth: isMaximized ? '20px' : '32px' }}
                           >
                             <div className={isMaximized ? 'text-[11px] leading-none' : ''}>{shift || ''}</div>
+                            {(hasError || hasWarning) && (
+                              <span className={`absolute top-0 right-0 text-[8px] leading-none ${hasError ? 'text-red-500' : 'text-orange-400'}`}>▲</span>
+                            )}
                             {!isMaximized && differsFromRequest && (
                               <div className="text-[9px] text-gray-400 leading-tight">元:{reqVal}</div>
                             )}
