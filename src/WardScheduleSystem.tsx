@@ -4048,6 +4048,102 @@ const WardScheduleSystem = () => {
             </div>
           </div>
         )}
+
+        {/* シフト種類管理モーダル（ダッシュボード用） */}
+        {showShiftManager && (() => {
+          const PRESET_SHIFTS_D: CustomShift[] = [
+            { symbol: '・', name: '日勤', category: 'work', color: 'blue', hours: 7.5 },
+            { symbol: '欠', name: '欠勤', category: 'off', color: 'red', hours: 0 },
+            { symbol: '産', name: '産前産後休暇', category: 'off', color: 'rose', hours: 0 },
+            { symbol: '育', name: '育児休業', category: 'off', color: 'rose', hours: 0 },
+            { symbol: '忌', name: '忌引', category: 'off', color: 'slate', hours: 0 },
+            { symbol: '結', name: '結婚休暇', category: 'off', color: 'pink', hours: 0 },
+            { symbol: '介', name: '介護休暇', category: 'off', color: 'amber', hours: 0 },
+            { symbol: '特', name: '特別休暇', category: 'off', color: 'violet', hours: 0 },
+            { symbol: '研', name: '研修', category: 'other', color: 'indigo', hours: 7.5 },
+            { symbol: '出張', name: '出張', category: 'work', color: 'sky', hours: 7.5 },
+            { symbol: '生理', name: '生理休暇', category: 'off', color: 'pink', hours: 0 },
+            { symbol: '/ﾈ', name: '午後年休', category: 'half_off', color: 'emerald', hours: 3.75 },
+            { symbol: 'ﾈ/', name: '午前年休', category: 'half_off', color: 'emerald', hours: 3.75 },
+            { symbol: '/ｹ', name: '午後欠勤', category: 'half_off', color: 'red', hours: 3.75 },
+            { symbol: 'ｹ/', name: '午前欠勤', category: 'half_off', color: 'red', hours: 3.75 },
+          ];
+          const categoryLabelD = (c: string) => c === 'work' ? '出勤' : c === 'off' ? '休み' : c === 'half_off' ? '半休' : 'その他';
+          return (
+          <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
+            <div className="min-h-full flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl">
+                <div className="flex items-center justify-between p-6 border-b">
+                  <h3 className="text-xl font-bold text-gray-800">シフト種類管理</h3>
+                  <button type="button" onClick={() => setShowShiftManager(false)} className="p-2 hover:bg-gray-100 rounded-full"><X size={20} /></button>
+                </div>
+                <div className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
+                  <div>
+                    <h4 className="font-bold text-gray-700 mb-2">システムシフト（変更不可）</h4>
+                    <div className="grid grid-cols-3 gap-2">
+                      {Object.entries(SHIFT_TYPES).map(([k, v]) => (
+                        <div key={k} className={`${v.color} px-3 py-1.5 rounded-lg text-sm font-medium`}>{k} - {v.name}</div>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="font-bold text-gray-700">カスタムシフト</h4>
+                      <button onClick={() => {
+                        const toAdd = PRESET_SHIFTS_D.filter(p => !customShifts.some(cs => cs.symbol === p.symbol) && !VALID_SHIFTS.includes(p.symbol));
+                        if (toAdd.length === 0) { alert('全てのプリセットが登録済みです'); return; }
+                        setCustomShifts(prev => [...prev, ...toAdd]);
+                      }} className="px-3 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 rounded-lg text-sm font-medium">病院標準セットを追加</button>
+                    </div>
+                    {customShifts.length > 0 && (
+                      <table className="w-full text-sm border-collapse mb-4">
+                        <thead><tr className="bg-gray-50"><th className="border p-2 text-left">記号</th><th className="border p-2 text-left">名称</th><th className="border p-2 text-center">カテゴリ</th><th className="border p-2 text-center">色</th><th className="border p-2 w-12"></th></tr></thead>
+                        <tbody>
+                          {customShifts.map((cs, idx) => (
+                            <tr key={idx}>
+                              <td className="border p-2"><span className={`${CUSTOM_SHIFT_COLORS[cs.color] || ''} px-2 py-0.5 rounded font-bold`}>{cs.symbol}</span></td>
+                              <td className="border p-2">{cs.name}</td>
+                              <td className="border p-2 text-center">{categoryLabelD(cs.category)}</td>
+                              <td className="border p-2 text-center"><span className={`${CUSTOM_SHIFT_COLORS[cs.color] || ''} px-2 py-0.5 rounded text-xs`}>{cs.color}</span></td>
+                              <td className="border p-2 text-center"><button onClick={() => setCustomShifts(prev => prev.filter((_, i) => i !== idx))} className="text-red-500 hover:text-red-700"><Trash2 size={14} /></button></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                    <div className="bg-gray-50 rounded-xl p-4">
+                      <h5 className="font-medium text-gray-700 mb-3">新規追加</h5>
+                      <form onSubmit={(e) => {
+                        e.preventDefault();
+                        const form = e.target as HTMLFormElement;
+                        const symbol = (form.elements.namedItem('dsymbol') as HTMLInputElement).value.trim();
+                        const name = (form.elements.namedItem('dcsname') as HTMLInputElement).value.trim();
+                        const category = (form.elements.namedItem('dcategory') as HTMLSelectElement).value as CustomShift['category'];
+                        const color = (form.elements.namedItem('dcolor') as HTMLSelectElement).value;
+                        const hours = parseFloat((form.elements.namedItem('dhours') as HTMLInputElement).value) || 0;
+                        if (!symbol) { alert('記号を入力してください'); return; }
+                        if (VALID_SHIFTS.includes(symbol) || customShifts.some(cs => cs.symbol === symbol)) { alert('この記号は既に使用されています'); return; }
+                        setCustomShifts(prev => [...prev, { symbol, name: name || symbol, color, category, hours }]);
+                        form.reset();
+                      }} className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                        <div><label className="block text-xs text-gray-600 mb-1">記号（最大4文字）</label><input name="dsymbol" maxLength={4} className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="例: 研" /></div>
+                        <div><label className="block text-xs text-gray-600 mb-1">名称</label><input name="dcsname" className="w-full px-3 py-2 border rounded-lg text-sm" placeholder="例: 研修" /></div>
+                        <div><label className="block text-xs text-gray-600 mb-1">カテゴリ</label><select name="dcategory" className="w-full px-3 py-2 border rounded-lg text-sm"><option value="work">出勤</option><option value="off">休み</option><option value="half_off">半休</option><option value="other">その他</option></select></div>
+                        <div><label className="block text-xs text-gray-600 mb-1">色</label><select name="dcolor" className="w-full px-3 py-2 border rounded-lg text-sm">{Object.keys(CUSTOM_SHIFT_COLORS).map(c => (<option key={c} value={c}>{c}</option>))}</select></div>
+                        <div><label className="block text-xs text-gray-600 mb-1">時間</label><input name="dhours" type="number" step="0.25" defaultValue="0" className="w-full px-3 py-2 border rounded-lg text-sm" /></div>
+                        <div className="flex items-end"><button type="submit" className="w-full px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium">追加</button></div>
+                      </form>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex justify-end p-4 border-t">
+                  <button onClick={() => setShowShiftManager(false)} className="px-4 py-2 bg-gray-200 hover:bg-gray-300 rounded-lg text-sm">閉じる</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          );
+        })()}
       </div>
     );
   }
