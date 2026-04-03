@@ -328,6 +328,9 @@ const WardScheduleSystem = () => {
   const [showPatternSelect, setShowPatternSelect] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(null); // 削除確認用
   const [showGenerateConfig, setShowGenerateConfig] = useState(false); // 生成設定モーダル
+  const [useSolverAPI, setUseSolverAPI] = useState(true); // AI最適化API使用フラグ
+  const [solverAPIUrl] = useState('https://schedule-solver-api.onrender.com');
+  const [solverAPIKey] = useState('kyoaikai-solver-2026');
   const [isMaximized, setIsMaximized] = useState(false); // 勤務表最大化
   const [showDeadlineSettings, setShowDeadlineSettings] = useState(false); // 締め切り設定モーダル
   const [showPasswordChange, setShowPasswordChange] = useState(false); // パスワード変更モーダル
@@ -542,6 +545,10 @@ const WardScheduleSystem = () => {
           catch(e) { console.error('customShifts解析エラー:', e); }
         }
 
+        // AI最適化API設定の読み込み
+        const savedUseSolver = await fetchSettingFromDB('useSolverAPI');
+        if (savedUseSolver !== null) setUseSolverAPI(savedUseSolver === 'true');
+
         // 管理者パスワードの読み込み
         const savedPw = await fetchSettingFromDB('adminPassword');
         if (savedPw) {
@@ -583,6 +590,15 @@ const WardScheduleSystem = () => {
     }, 500);
     return () => clearTimeout(timer);
   }, [customShifts, settingsLoaded, isAdminAuth]);
+
+  // useSolverAPIの変更をDBに保存
+  useEffect(() => {
+    if (!settingsLoaded || !isAdminAuth) return;
+    const timer = setTimeout(() => {
+      saveSettingToDB('useSolverAPI', String(useSolverAPI));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [useSolverAPI, settingsLoaded, isAdminAuth]);
 
   // ページ離脱時の確認ダイアログ
   useEffect(() => {
@@ -1428,14 +1444,147 @@ const WardScheduleSystem = () => {
     });
   };
 
+  // OR-Tools APIリクエスト構築
+  const buildSolverRequest = () => {
+    const monthKey = `${targetYear}-${targetMonth}`;
+    const holidays = getJapaneseHolidays(targetYear, targetMonth);
+    const weekends: number[] = [];
+    for (let d = 0; d < daysInMonth; d++) {
+      const dow = new Date(targetYear, targetMonth, d + 1).getDay();
+      if (dow === 0 || dow === 6 || holidays.includes(d + 1)) weekends.push(d);
+    }
+
+    const generationNurses = activeNurses.filter(n => !nurseShiftPrefs[n.id]?.excludeFromGeneration);
+
+    const nurseData = generationNurses.map(n => {
+      const pr = nurseShiftPrefs[n.id] || {} as any;
+      return {
+        id: n.id,
+        name: n.name,
+        position: n.position,
+        noNightShift: pr.noNightShift || false,
+        noDayShift: pr.noDayShift || false,
+        maxNightShifts: pr.maxNightShifts ?? generateConfig.maxNightShifts,
+        excludeFromGeneration: false,
+      };
+    });
+
+    const requestData: Record<string, Record<string, string>> = {};
+    generationNurses.forEach(n => {
+      const nr = requests[monthKey]?.[String(n.id)] || {};
+      if (Object.keys(nr).length > 0) requestData[String(n.id)] = nr as Record<string, string>;
+    });
+
+    return {
+      nurses: nurseData,
+      daysInMonth,
+      year: targetYear,
+      month: targetMonth,
+      config: {
+        weekdayDayStaff: generateConfig.weekdayDayStaff,
+        weekendDayStaff: generateConfig.weekendDayStaff,
+        nightShiftPattern: generateConfig.nightShiftPattern,
+        maxNightShifts: generateConfig.maxNightShifts,
+        maxDaysOff: generateConfig.maxDaysOff,
+        maxConsecutiveDays: generateConfig.maxConsecutiveDays,
+        maxDoubleNightPairs: (generateConfig as any).maxDoubleNightPairs ?? 2,
+        excludeMgmtFromNightCount: generateConfig.excludeMgmtFromNightCount,
+      },
+      requests: requestData,
+      nightNgPairs: nightNgPairs.map(([a, b]) => [a, b]),
+      prevMonthConstraints: prevMonthConstraints,
+      holidays: holidays.map(h => h - 1),
+      weekends,
+      numPatterns: 3,
+    };
+  };
+
   // 勤務表自動生成（マルチフェーズ制約最適化 + 焼きなまし法）
   const generateSchedule = async () => {
     setGenerating(true);
     setShowGenerateConfig(false);
-    setGeneratingPhase('フェーズ1: 制約基盤構築...');
 
     // UIを更新させるためのyield
     const tick = () => new Promise<void>(r => setTimeout(r, 0));
+
+    // === OR-Tools API経由の生成 ===
+    if (useSolverAPI) {
+      setGeneratingPhase('AI最適化サーバーに接続中...');
+      await tick();
+
+      try {
+        const reqBody = buildSolverRequest();
+        setGeneratingPhase('AI最適化を実行中（約30秒）...');
+        await tick();
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 120000);
+
+        const response = await fetch(`${solverAPIUrl}/solve`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': solverAPIKey,
+          },
+          body: JSON.stringify(reqBody),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+          const err = await response.text();
+          throw new Error(`API Error: ${response.status} ${err}`);
+        }
+
+        const result = await response.json();
+
+        if (!result.patterns || result.patterns.length === 0) {
+          throw new Error('APIからパターンが返されませんでした');
+        }
+
+        // API結果をフロントエンド形式に変換
+        const excludedNurses = activeNurses.filter(n => nurseShiftPrefs[n.id]?.excludeFromGeneration);
+        const patterns = result.patterns.map((p: any, idx: number) => {
+          const data: Record<number, string[]> = {};
+          Object.entries(p.data).forEach(([nid, shifts]: [string, any]) => {
+            data[Number(nid)] = shifts;
+          });
+          excludedNurses.forEach(n => {
+            data[n.id] = new Array(daysInMonth).fill(null);
+          });
+
+          return {
+            label: p.label || `パターン${String.fromCharCode(65 + idx)}`,
+            data,
+            score: p.score || 0,
+            metrics: p.metrics || {},
+            report: [`✅ OR-Tools CP-SATソルバーで生成`],
+          };
+        });
+
+        setGeneratedPatterns(patterns);
+        setShowPatternSelect(true);
+        setGenerating(false);
+        setGeneratingPhase('');
+        return;
+
+      } catch (error: any) {
+        console.error('Solver API error:', error);
+        const fallback = confirm(
+          `⚠️ AI最適化サーバーへの接続に失敗しました。\n\n${error.message}\n\nローカル生成に切り替えますか？`
+        );
+        if (!fallback) {
+          setGenerating(false);
+          setGeneratingPhase('');
+          return;
+        }
+        // フォールスルーして既存のローカル生成に進む
+      }
+    }
+
+    // === ローカル生成（既存ロジック） ===
+    setGeneratingPhase('フェーズ1: 制約基盤構築...');
 
     await tick();
 
@@ -6750,6 +6899,42 @@ const WardScheduleSystem = () => {
                 </div>
                 
                 <div className="space-y-6">
+                  {/* 生成方式の選択 */}
+                  <div className="bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200 rounded-xl p-4">
+                    <h4 className="font-bold text-indigo-800 mb-3 flex items-center gap-2">
+                      <Activity size={20} />
+                      生成方式
+                    </h4>
+                    <div className="space-y-3">
+                      <label className={`flex items-start gap-3 p-3 rounded-lg cursor-pointer border-2 transition-all ${useSolverAPI ? 'border-indigo-400 bg-white shadow-sm' : 'border-transparent hover:bg-white/50'}`}>
+                        <input
+                          type="radio"
+                          name="solverMode"
+                          checked={useSolverAPI}
+                          onChange={() => setUseSolverAPI(true)}
+                          className="mt-1 w-4 h-4 text-indigo-600"
+                        />
+                        <div>
+                          <span className="font-bold text-indigo-700">🤖 AI最適化（推奨）</span>
+                          <p className="text-xs text-gray-600 mt-1">OR-Tools制約充足ソルバーによる数理最適化。最適解に近い勤務表を生成します。</p>
+                        </div>
+                      </label>
+                      <label className={`flex items-start gap-3 p-3 rounded-lg cursor-pointer border-2 transition-all ${!useSolverAPI ? 'border-gray-400 bg-white shadow-sm' : 'border-transparent hover:bg-white/50'}`}>
+                        <input
+                          type="radio"
+                          name="solverMode"
+                          checked={!useSolverAPI}
+                          onChange={() => setUseSolverAPI(false)}
+                          className="mt-1 w-4 h-4 text-gray-600"
+                        />
+                        <div>
+                          <span className="font-bold text-gray-700">📊 ローカル生成</span>
+                          <p className="text-xs text-gray-600 mt-1">ブラウザ内で生成。サーバー接続不要ですが品質はやや劣ります。</p>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+
                   {/* 週ごとの夜勤人数設定 */}
                   <div className="bg-purple-50 border border-purple-200 rounded-xl p-4">
                     <h4 className="font-bold text-purple-800 mb-3 flex items-center gap-2">
