@@ -322,6 +322,7 @@ const WardScheduleSystem = () => {
   const [editingNurse, setEditingNurse] = useState(null);
   const [showAddNurse, setShowAddNurse] = useState(false);
   const [newNurseData, setNewNurseData] = useState({ name: '', position: '一般' });
+  const [editingCell, setEditingCell] = useState<{ nurseId: number; dayIndex: number; x: number; y: number } | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generatingPhase, setGeneratingPhase] = useState('');
   const [generatedPatterns, setGeneratedPatterns] = useState<any[]>([]);
@@ -616,6 +617,18 @@ const WardScheduleSystem = () => {
   useEffect(() => {
     loadVersionsFromLocalStorage(targetYear, targetMonth);
   }, [targetYear, targetMonth]);
+
+  // ポップオーバーが開いている時、スクロールやリサイズで閉じる
+  useEffect(() => {
+    if (!editingCell) return;
+    const close = () => setEditingCell(null);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [editingCell]);
 
   // 保存ラッパー関数（保存状態管理 + LocalStorageバックアップ）
   const saveWithStatus = async (saveFn: () => Promise<void>) => {
@@ -3301,6 +3314,7 @@ const WardScheduleSystem = () => {
             </button>
           </div>
 
+
           <p className="text-center text-xs text-gray-400 mt-8">
             データはサーバーに安全に保存されます
           </p>
@@ -5128,22 +5142,44 @@ const WardScheduleSystem = () => {
           }
 
           // セル編集ハンドラ（schedule未生成時は自動作成）
-          // 方式:
-          //   「夜」を手動設定 → 翌日・翌々日の元値をバックアップ → 「明」「休」で上書き
-          //   「夜」を解除 →
-          //     バックアップあり（手動設定した夜）→ 元の値に復元
-          //     バックアップなし（自動生成/DB由来の夜）→ 翌日・翌々日はそのまま変更しない
-          const handleCellClick = (nurseId: any, dayIndex: number, currentShift: string | null) => {
-            const CYCLE: (string | null)[] = ['日', '夜', '管夜', '休', '有', '午前半', '午後半', ...customShifts.map(cs => cs.symbol), null];
-            const currentIdx = currentShift ? CYCLE.indexOf(currentShift) : -1;
-            const nextIdx = (currentShift === '明' || currentShift === '管明') ? CYCLE.indexOf('休') : (currentIdx >= 0 ? (currentIdx + 1) % CYCLE.length : 0);
-            const newShift = CYCLE[nextIdx];
+          // ポップオーバーパレット方式: クリックでパレットを開く
+          const handleCellClick = (nurseId: any, dayIndex: number, currentShift: string | null, event: React.MouseEvent) => {
+            // 前月制約日はクリック不可
+            const prevCon = (prevMonthConstraints as any)[nurseId]?.[dayIndex + 1];
+            if (prevCon) return;
+
+            // 既に同じセルが開いていたら閉じる
+            if (editingCell && editingCell.nurseId === nurseId && editingCell.dayIndex === dayIndex) {
+              setEditingCell(null);
+              return;
+            }
+
+            // ポップオーバーの位置をクリック位置から計算
+            const rect = (event.target as HTMLElement).getBoundingClientRect();
+            setEditingCell({
+              nurseId,
+              dayIndex,
+              x: rect.left,
+              y: rect.bottom,
+            });
+          };
+
+          // シフト選択実行関数（夜→明→休の自動セット、バックアップ、DB保存等）
+          const applyShiftFromPalette = (nurseId: number, dayIndex: number, newShift: string | null) => {
+            const currentShift = sanitizeShiftLocal(scheduleDisplayData[nurseId]?.[dayIndex]);
+
+            // 同じシフトなら何もしない
+            if (currentShift === newShift) {
+              setEditingCell(null);
+              return;
+            }
+
             const bk = nightBackupRef.current;
 
             const updateData = (data: any) => {
               const newData = JSON.parse(JSON.stringify(data));
               if (!newData[nurseId]) newData[nurseId] = new Array(daysInMonth).fill(null);
-              
+
               // ★ 特別処理: 夜→管夜 の切り替え（明→管明に差し替えるだけ）
               if (currentShift === '夜' && newShift === '管夜') {
                 newData[nurseId][dayIndex] = '管夜';
@@ -5151,7 +5187,14 @@ const WardScheduleSystem = () => {
                   newData[nurseId][dayIndex + 1] = '管明';
                   updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 2, '管明');
                 }
-                // 翌々日の「休」はそのまま（夜でも管夜でも休は共通）
+                return newData;
+              }
+              if (currentShift === '管夜' && newShift === '夜') {
+                newData[nurseId][dayIndex] = '夜';
+                if (dayIndex + 1 < daysInMonth && newData[nurseId][dayIndex + 1] === '管明') {
+                  newData[nurseId][dayIndex + 1] = '明';
+                  updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 2, '明');
+                }
                 return newData;
               }
 
@@ -5160,7 +5203,6 @@ const WardScheduleSystem = () => {
                 const key1 = `${nurseId}-${dayIndex + 1}`;
                 const key2 = `${nurseId}-${dayIndex + 2}`;
                 const currentAke = currentShift === '夜' ? '明' : '管明';
-                // バックアップがあれば復元
                 if (key1 in bk) {
                   if (dayIndex + 1 < daysInMonth) {
                     newData[nurseId][dayIndex + 1] = bk[key1];
@@ -5168,7 +5210,6 @@ const WardScheduleSystem = () => {
                   }
                   delete bk[key1];
                 } else {
-                  // バックアップなし（自動生成由来）→ 対応する明けのみクリア
                   if (dayIndex + 1 < daysInMonth && newData[nurseId][dayIndex + 1] === currentAke) {
                     newData[nurseId][dayIndex + 1] = null;
                     updateScheduleCellInDB(nurseId, targetYear, targetMonth, dayIndex + 2, null);
@@ -5181,19 +5222,17 @@ const WardScheduleSystem = () => {
                   }
                   delete bk[key2];
                 }
-                // バックアップなしの休はそのまま残す（手動で設定した可能性）
               }
-              
-              // ② クリックしたセルの値を更新
+
+              // ② セル値更新
               newData[nurseId][dayIndex] = newShift;
-              
-              // ③ 新しいシフトが「夜」or「管夜」→ 翌日・翌々日を自動セット（既存の夜勤系は上書きしない）
+
+              // ③ 新しく「夜」or「管夜」→ 翌日・翌々日を自動セット
               if (newShift === '夜' || newShift === '管夜') {
                 const akeType = newShift === '夜' ? '明' : '管明';
                 if (dayIndex + 1 < daysInMonth) {
                   const key1 = `${nurseId}-${dayIndex + 1}`;
                   const existing1 = newData[nurseId][dayIndex + 1];
-                  // 夜・管夜は上書きしない（別の夜勤シフト）、それ以外はバックアップして上書き
                   if (existing1 !== '夜' && existing1 !== '管夜') {
                     bk[key1] = existing1;
                     newData[nurseId][dayIndex + 1] = akeType;
@@ -5203,7 +5242,6 @@ const WardScheduleSystem = () => {
                 if (dayIndex + 2 < daysInMonth) {
                   const key2 = `${nurseId}-${dayIndex + 2}`;
                   const existing2 = newData[nurseId][dayIndex + 2];
-                  // 夜・管夜・明・管明は上書きしない
                   if (existing2 !== '夜' && existing2 !== '管夜' && existing2 !== '明' && existing2 !== '管明') {
                     bk[key2] = existing2;
                     newData[nurseId][dayIndex + 2] = '休';
@@ -5211,7 +5249,7 @@ const WardScheduleSystem = () => {
                   }
                 }
               }
-              
+
               return newData;
             };
 
@@ -5221,7 +5259,7 @@ const WardScheduleSystem = () => {
                 data: updateData(prev.data)
               }));
             } else {
-              const baseData = {};
+              const baseData: Record<number, any[]> = {};
               activeNurses.forEach(nurse => {
                 baseData[nurse.id] = scheduleDisplayData[nurse.id] ? [...scheduleDisplayData[nurse.id]] : new Array(daysInMonth).fill(null);
               });
@@ -5236,8 +5274,10 @@ const WardScheduleSystem = () => {
               action: 'shift_change', user_type: 'admin',
               nurse_id: nurseId, nurse_name: targetNurse?.name,
               year: targetYear, month: targetMonth, day: dayIndex + 1,
-              old_value: currentShift || '', new_value: newShift || '',
+              old_value: currentShift || '空', new_value: newShift || '空',
             });
+
+            setEditingCell(null);
           };
 
           return (
@@ -5430,7 +5470,7 @@ const WardScheduleSystem = () => {
                           return (
                           <td
                             key={i}
-                            onClick={() => handleCellClick(nurse.id, i, sanitizeShiftLocal(shift))}
+                            onClick={(e) => handleCellClick(nurse.id, i, sanitizeShiftLocal(shift), e)}
                             title={violationTitle || undefined}
                             className={`border text-center cursor-pointer hover:bg-blue-50 transition-colors relative ${isMaximized ? 'px-0 py-px' : 'p-1'} ${allShifts[shift]?.color || ''} ${
                               matchesRequest ? 'border-2 border-green-500' :
@@ -5602,7 +5642,103 @@ const WardScheduleSystem = () => {
                 </tfoot>
               </table>
             </div>
-            
+
+            {/* ポップオーバーパレット */}
+            {editingCell && (() => {
+              const nurse = activeNurses.find(n => n.id === editingCell.nurseId);
+              const currentShift = sanitizeShiftLocal(scheduleDisplayData[editingCell.nurseId]?.[editingCell.dayIndex]);
+
+              const systemShiftButtons = [
+                { symbol: '日', name: '日勤' },
+                { symbol: '夜', name: '夜勤' },
+                { symbol: '管夜', name: '管夜' },
+                { symbol: '休', name: '公休' },
+                { symbol: '有', name: '有休' },
+                { symbol: '午前半', name: '午前半休' },
+                { symbol: '午後半', name: '午後半休' },
+              ];
+
+              const popX = Math.min(editingCell.x, window.innerWidth - 320);
+              const popY = editingCell.y + window.scrollY;
+              const showAbove = editingCell.y > window.innerHeight - 250;
+
+              return (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setEditingCell(null)}
+                  />
+                  <div
+                    className="fixed z-50 bg-white rounded-xl shadow-2xl border-2 border-gray-200 p-3 w-[280px]"
+                    style={{
+                      left: `${popX}px`,
+                      top: showAbove ? undefined : `${popY + 4}px`,
+                      bottom: showAbove ? `${window.innerHeight - editingCell.y + window.scrollY + 4}px` : undefined,
+                    }}
+                  >
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-xs text-gray-500 font-medium">
+                        {nurse?.name} - {editingCell.dayIndex + 1}日
+                      </span>
+                      <button onClick={() => setEditingCell(null)} className="text-gray-400 hover:text-gray-600 text-xs">✕</button>
+                    </div>
+
+                    <div className="text-xs text-gray-400 mb-2">
+                      現在: <span className={`font-bold ${allShifts[currentShift || '']?.color || 'text-gray-300'}`}>{currentShift || '空白'}</span>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-1 mb-2">
+                      {systemShiftButtons.map(btn => (
+                        <button
+                          key={btn.symbol}
+                          onClick={() => applyShiftFromPalette(editingCell.nurseId, editingCell.dayIndex, btn.symbol)}
+                          className={`px-1 py-2 rounded-lg text-xs font-bold transition-all hover:scale-105 ${
+                            currentShift === btn.symbol
+                              ? 'ring-2 ring-blue-500 ' + (allShifts[btn.symbol]?.color || '')
+                              : (allShifts[btn.symbol]?.color || 'bg-gray-100')
+                          }`}
+                          title={btn.name}
+                        >
+                          {btn.symbol}
+                        </button>
+                      ))}
+                    </div>
+
+                    {customShifts.length > 0 && (
+                      <>
+                        <div className="text-[10px] text-gray-400 mb-1">その他</div>
+                        <div className="grid grid-cols-4 gap-1 mb-2">
+                          {customShifts.map(cs => (
+                            <button
+                              key={cs.symbol}
+                              onClick={() => applyShiftFromPalette(editingCell.nurseId, editingCell.dayIndex, cs.symbol)}
+                              className={`px-1 py-2 rounded-lg text-xs font-bold transition-all hover:scale-105 ${
+                                currentShift === cs.symbol
+                                  ? 'ring-2 ring-blue-500 ' + (allShifts[cs.symbol]?.color || '')
+                                  : (allShifts[cs.symbol]?.color || 'bg-gray-100')
+                              }`}
+                              title={cs.name}
+                            >
+                              {cs.symbol}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => applyShiftFromPalette(editingCell.nurseId, editingCell.dayIndex, null)}
+                        className="flex-1 px-2 py-1.5 bg-gray-100 hover:bg-gray-200 rounded-lg text-xs text-gray-600 transition-colors"
+                      >
+                        クリア
+                      </button>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+
             {/* 統計サマリー */}
             <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4">
               <div className="bg-purple-50 border border-purple-200 rounded-xl p-4 text-center">
