@@ -732,7 +732,7 @@ const WardScheduleSystem = () => {
   // バージョン管理: LocalStorage読み込み
   const loadVersionsFromLocalStorage = (year: number, month: number) => {
     try {
-      const key = `scheduleVersions-${department}-${year}-${month}`;
+      const key = `scheduleVersions-${dbPrefix}-${year}-${month}`;
       const data = localStorage.getItem(key);
       if (data) {
         const parsed = JSON.parse(data);
@@ -752,7 +752,7 @@ const WardScheduleSystem = () => {
   // バージョン管理: LocalStorage保存
   const saveVersionsToLocalStorage = (versions: ScheduleVersion[], nextVer: number) => {
     try {
-      const key = `scheduleVersions-${department}-${targetYear}-${targetMonth}`;
+      const key = `scheduleVersions-${dbPrefix}-${targetYear}-${targetMonth}`;
       localStorage.setItem(key, JSON.stringify({ versions, nextVersionNumber: nextVer }));
     } catch (e) {
       console.error('バージョン保存エラー:', e);
