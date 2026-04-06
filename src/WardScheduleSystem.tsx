@@ -25,12 +25,14 @@ type CustomShift = {
 type RequestLimitConfig = {
   dailyLimits: {
     weekday: Record<string, number>;
-    weekend: Record<string, number>;
+    saturday: Record<string, number>;
+    sunday: Record<string, number>;
     holiday: Record<string, number>;
   };
   personalDayTypeLimits: {
     weekday: number;
-    weekend: number;
+    saturday: number;
+    sunday: number;
     holiday: number;
   };
 };
@@ -388,12 +390,13 @@ const WardScheduleSystem = () => {
   const [nurseShiftPrefs, setNurseShiftPrefs] = useState<Record<number, { maxNightShifts: number; noNightShift: boolean; noDayShift: boolean; excludeFromMaxDaysOff: boolean; maxRequests: number; excludeFromGeneration: boolean; requestLimits?: Record<string, number> }>>({});
   const [showNurseShiftPrefs, setShowNurseShiftPrefs] = useState(false);
   const [requestLimitConfig, setRequestLimitConfig] = useState<RequestLimitConfig>({
-    dailyLimits: { weekday: {}, weekend: {}, holiday: {} },
-    personalDayTypeLimits: { weekday: 0, weekend: 0, holiday: 0 },
+    dailyLimits: { weekday: {}, saturday: {}, sunday: {}, holiday: {} },
+    personalDayTypeLimits: { weekday: 0, saturday: 0, sunday: 0, holiday: 0 },
   });
   const [dailyOverrides, setDailyOverrides] = useState<DailyOverrides>({});
   const [showRequestLimits, setShowRequestLimits] = useState(false);
   const [editingLimitDay, setEditingLimitDay] = useState<{ day: number; x: number; y: number } | null>(null);
+  const [limitPopPos, setLimitPopPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
   // 設定読み込み完了フラグ
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -538,7 +541,20 @@ const WardScheduleSystem = () => {
         // 希望制限設定の読み込み
         const savedReqLimits = await fetchSettingFromDB('requestLimitConfig');
         if (savedReqLimits) {
-          try { setRequestLimitConfig(JSON.parse(savedReqLimits)); } catch(e) { console.error('requestLimitConfig解析エラー:', e); }
+          try {
+            const parsed = JSON.parse(savedReqLimits);
+            if (parsed.dailyLimits?.weekend) {
+              parsed.dailyLimits.saturday = parsed.dailyLimits.saturday || parsed.dailyLimits.weekend;
+              parsed.dailyLimits.sunday = parsed.dailyLimits.sunday || parsed.dailyLimits.weekend;
+              delete parsed.dailyLimits.weekend;
+            }
+            if (parsed.personalDayTypeLimits?.weekend !== undefined) {
+              parsed.personalDayTypeLimits.saturday = parsed.personalDayTypeLimits.saturday ?? parsed.personalDayTypeLimits.weekend;
+              parsed.personalDayTypeLimits.sunday = parsed.personalDayTypeLimits.sunday ?? parsed.personalDayTypeLimits.weekend;
+              delete parsed.personalDayTypeLimits.weekend;
+            }
+            setRequestLimitConfig(parsed);
+          } catch(e) { console.error('requestLimitConfig解析エラー:', e); }
         }
         const savedDailyOvr = await fetchSettingFromDB('dailyOverrides');
         if (savedDailyOvr) {
@@ -3233,8 +3249,8 @@ const WardScheduleSystem = () => {
     const dow = new Date(targetYear, targetMonth, day).getDay();
     const holidayList = getJapaneseHolidays(targetYear, targetMonth);
     const isHolidayDay = holidayList.includes(day);
-    const dayType: 'weekday' | 'weekend' | 'holiday' =
-      isHolidayDay ? 'holiday' : (dow === 0 || dow === 6) ? 'weekend' : 'weekday';
+    const dayType: 'weekday' | 'saturday' | 'sunday' | 'holiday' =
+      isHolidayDay ? 'holiday' : dow === 0 ? 'sunday' : dow === 6 ? 'saturday' : 'weekday';
 
     // 層2: 日別オーバーライドチェック（層1より優先）
     const dayOverride = dailyOverrides[day];
@@ -3255,7 +3271,7 @@ const WardScheduleSystem = () => {
           if (Number(nid) !== nurseId && reqs[day] === shiftType) count++;
         });
         if (count >= dailyLimit) {
-          return { allowed: false, reason: `${dayType === 'weekday' ? '平日' : dayType === 'weekend' ? '土日' : '祝日'}の「${shiftType}」は1日${dailyLimit}人までです（現在${count}人）` };
+          return { allowed: false, reason: `${dayType === 'weekday' ? '平日' : dayType === 'saturday' ? '土曜' : dayType === 'sunday' ? '日曜' : '祝日'}の「${shiftType}」は1日${dailyLimit}人までです（現在${count}人）` };
         }
       }
     }
@@ -3269,11 +3285,11 @@ const WardScheduleSystem = () => {
         if (v === '明' || v === '管明') return;
         const dd = new Date(targetYear, targetMonth, Number(d)).getDay();
         const isH = holidayList.includes(Number(d));
-        const dt = isH ? 'holiday' : (dd === 0 || dd === 6) ? 'weekend' : 'weekday';
+        const dt = isH ? 'holiday' : dd === 0 ? 'sunday' : dd === 6 ? 'saturday' : 'weekday';
         if (dt === dayType) dayTypeCount++;
       });
       if (dayTypeCount >= personalLimit) {
-        return { allowed: false, reason: `${dayType === 'weekday' ? '平日' : dayType === 'weekend' ? '土日' : '祝日'}の希望は${personalLimit}日までです（現在${dayTypeCount}日）` };
+        return { allowed: false, reason: `${dayType === 'weekday' ? '平日' : dayType === 'saturday' ? '土曜' : dayType === 'sunday' ? '日曜' : '祝日'}の希望は${personalLimit}日までです（現在${dayTypeCount}日）` };
       }
     }
 
@@ -3426,7 +3442,7 @@ const WardScheduleSystem = () => {
     const dow = new Date(targetYear, targetMonth, day).getDay();
     const holidayList = getJapaneseHolidays(targetYear, targetMonth);
     const isHolidayDay = holidayList.includes(day);
-    const dayType: 'weekday' | 'weekend' | 'holiday' = isHolidayDay ? 'holiday' : (dow === 0 || dow === 6) ? 'weekend' : 'weekday';
+    const dayType: 'weekday' | 'saturday' | 'sunday' | 'holiday' = isHolidayDay ? 'holiday' : dow === 0 ? 'sunday' : dow === 6 ? 'saturday' : 'weekday';
 
     const counts: Record<string, { current: number; limit: number | null }> = {};
     Object.entries(allReqs).forEach(([nid, reqs]: [string, any]) => {
@@ -4526,7 +4542,8 @@ const WardScheduleSystem = () => {
                           <tr className="bg-gray-100">
                             <th className="border p-2 text-left">シフト</th>
                             <th className="border p-2 text-center">平日</th>
-                            <th className="border p-2 text-center">土日</th>
+                            <th className="border p-2 text-center">土曜</th>
+                            <th className="border p-2 text-center">日曜</th>
                             <th className="border p-2 text-center">祝日</th>
                           </tr>
                         </thead>
@@ -4534,7 +4551,7 @@ const WardScheduleSystem = () => {
                           {['休', '有', '夜', '管夜'].map(shift => (
                             <tr key={shift}>
                               <td className="border p-2 font-medium">{shift}</td>
-                              {(['weekday', 'weekend', 'holiday'] as const).map(dt => (
+                              {(['weekday', 'saturday', 'sunday', 'holiday'] as const).map(dt => (
                                 <td key={dt} className="border p-2 text-center">
                                   <Stepper
                                     value={requestLimitConfig.dailyLimits[dt][shift] || 0}
@@ -4562,8 +4579,8 @@ const WardScheduleSystem = () => {
                   <div>
                     <h4 className="font-bold text-gray-800 mb-2">1人あたりの曜日タイプ別希望日数上限</h4>
                     <p className="text-xs text-gray-500 mb-2">各職員がその曜日タイプに入力できる希望数（0=無制限）</p>
-                    <div className="grid grid-cols-3 gap-4">
-                      {([['weekday', '平日'], ['weekend', '土日'], ['holiday', '祝日']] as const).map(([key, label]) => (
+                    <div className="grid grid-cols-4 gap-3">
+                      {([['weekday', '平日'], ['saturday', '土曜'], ['sunday', '日曜'], ['holiday', '祝日']] as const).map(([key, label]) => (
                         <div key={key} className="flex items-center gap-2">
                           <span className="text-sm font-medium w-10">{label}</span>
                           <Stepper
@@ -4605,6 +4622,9 @@ const WardScheduleSystem = () => {
                             onClick={(e) => {
                               if (editingLimitDay?.day === d) { setEditingLimitDay(null); } else {
                                 const rect = (e.target as HTMLElement).closest('button')!.getBoundingClientRect();
+                                const initX = Math.min(rect.left, window.innerWidth - 320);
+                                const initY = Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - 380));
+                                setLimitPopPos({ x: initX, y: initY });
                                 setEditingLimitDay({ day: d, x: rect.left, y: rect.bottom });
                               }
                             }}
@@ -4629,45 +4649,75 @@ const WardScheduleSystem = () => {
                       const dow = new Date(targetYear, targetMonth, d).getDay();
                       const dowName = ['日', '月', '火', '水', '木', '金', '土'][dow];
                       const shifts = ['休', '有', '日', '夜', '管夜', '午前半', '午後半'];
-                      const popX = Math.min(editingLimitDay.x, window.innerWidth - 320);
                       return (
                         <>
                           <div className="fixed inset-0 z-40" onClick={() => setEditingLimitDay(null)} />
                           <div
-                            className="fixed z-50 bg-white border-2 border-rose-200 rounded-xl p-4 shadow-2xl w-[300px]"
-                            style={{
-                              left: `${popX}px`,
-                              top: `${Math.max(8, Math.min(editingLimitDay.y + 4, window.innerHeight - 380))}px`,
-                            }}
+                            className="fixed z-50 bg-white border-2 border-rose-200 rounded-xl shadow-2xl w-[300px]"
+                            style={{ left: `${limitPopPos.x}px`, top: `${limitPopPos.y}px` }}
                           >
-                            <div className="flex justify-between items-center mb-3">
-                              <span className="font-bold text-gray-800">{targetMonth + 1}月{d}日（{dowName}）</span>
-                              <div className="flex gap-2">
+                            <div
+                              className="flex justify-between items-center p-3 pb-2 cursor-move bg-rose-50 rounded-t-xl select-none"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                const startX = e.clientX - limitPopPos.x;
+                                const startY = e.clientY - limitPopPos.y;
+                                const onMove = (ev: MouseEvent) => {
+                                  setLimitPopPos({
+                                    x: Math.max(0, Math.min(ev.clientX - startX, window.innerWidth - 320)),
+                                    y: Math.max(0, Math.min(ev.clientY - startY, window.innerHeight - 100)),
+                                  });
+                                };
+                                const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+                                document.addEventListener('mousemove', onMove);
+                                document.addEventListener('mouseup', onUp);
+                              }}
+                              onTouchStart={(e) => {
+                                const touch = e.touches[0];
+                                const startX = touch.clientX - limitPopPos.x;
+                                const startY = touch.clientY - limitPopPos.y;
+                                const onMove = (ev: TouchEvent) => {
+                                  const t = ev.touches[0];
+                                  setLimitPopPos({
+                                    x: Math.max(0, Math.min(t.clientX - startX, window.innerWidth - 320)),
+                                    y: Math.max(0, Math.min(t.clientY - startY, window.innerHeight - 100)),
+                                  });
+                                };
+                                const onUp = () => { document.removeEventListener('touchmove', onMove); document.removeEventListener('touchend', onUp); };
+                                document.addEventListener('touchmove', onMove);
+                                document.addEventListener('touchend', onUp);
+                              }}
+                            >
+                              <span className="font-bold text-gray-800 text-sm">{targetMonth + 1}月{d}日（{dowName}）</span>
+                              <div className="flex gap-2 items-center">
+                                <span className="text-[10px] text-gray-400">ドラッグで移動</span>
                                 <button type="button" onClick={() => { setDailyOverrides(prev => { const next = { ...prev }; delete next[d]; return next; }); setEditingLimitDay(null); }} className="text-xs text-red-500 hover:text-red-700">クリア</button>
-                                <button type="button" onClick={() => setEditingLimitDay(null)} className="text-xs text-gray-500 hover:text-gray-700">✕</button>
+                                <button type="button" onClick={() => setEditingLimitDay(null)} className="text-gray-400 hover:text-gray-600 text-sm">✕</button>
                               </div>
                             </div>
-                            <div className="grid grid-cols-1 gap-1.5">
-                              {shifts.map(shift => (
-                                <div key={shift} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-1.5">
-                                  <span className="text-sm font-medium">{shift}</span>
-                                  <Stepper
-                                    value={current[shift] || 0}
-                                    onChange={(v) => {
-                                      setDailyOverrides(prev => {
-                                        const dayData = { ...(prev[d] || {}) };
-                                        if (v === 0) { delete dayData[shift]; } else { dayData[shift] = v; }
-                                        if (Object.keys(dayData).length === 0) { const next = { ...prev }; delete next[d]; return next; }
-                                        return { ...prev, [d]: dayData };
-                                      });
-                                    }}
-                                    min={0}
-                                    max={20}
-                                  />
-                                </div>
-                              ))}
+                            <div className="p-3 pt-2">
+                              <div className="grid grid-cols-1 gap-1.5">
+                                {shifts.map(shift => (
+                                  <div key={shift} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-1.5">
+                                    <span className="text-sm font-medium">{shift}</span>
+                                    <Stepper
+                                      value={current[shift] || 0}
+                                      onChange={(v) => {
+                                        setDailyOverrides(prev => {
+                                          const dayData = { ...(prev[d] || {}) };
+                                          if (v === 0) { delete dayData[shift]; } else { dayData[shift] = v; }
+                                          if (Object.keys(dayData).length === 0) { const next = { ...prev }; delete next[d]; return next; }
+                                          return { ...prev, [d]: dayData };
+                                        });
+                                      }}
+                                      min={0}
+                                      max={20}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                              <p className="text-[10px] text-gray-400 mt-2">0（∞）= 制限なし</p>
                             </div>
-                            <p className="text-[10px] text-gray-400 mt-2">0（∞）= 制限なし</p>
                           </div>
                         </>
                       );
@@ -7197,7 +7247,8 @@ const WardScheduleSystem = () => {
                           <tr className="bg-gray-100">
                             <th className="border p-2 text-left">シフト</th>
                             <th className="border p-2 text-center">平日</th>
-                            <th className="border p-2 text-center">土日</th>
+                            <th className="border p-2 text-center">土曜</th>
+                            <th className="border p-2 text-center">日曜</th>
                             <th className="border p-2 text-center">祝日</th>
                           </tr>
                         </thead>
@@ -7205,7 +7256,7 @@ const WardScheduleSystem = () => {
                           {['休', '有', '夜', '管夜'].map(shift => (
                             <tr key={shift}>
                               <td className="border p-2 font-medium">{shift}</td>
-                              {(['weekday', 'weekend', 'holiday'] as const).map(dt => (
+                              {(['weekday', 'saturday', 'sunday', 'holiday'] as const).map(dt => (
                                 <td key={dt} className="border p-2 text-center">
                                   <Stepper
                                     value={requestLimitConfig.dailyLimits[dt][shift] || 0}
@@ -7233,8 +7284,8 @@ const WardScheduleSystem = () => {
                   <div>
                     <h4 className="font-bold text-gray-800 mb-2">1人あたりの曜日タイプ別希望日数上限</h4>
                     <p className="text-xs text-gray-500 mb-2">各職員がその曜日タイプに入力できる希望数（0=無制限）</p>
-                    <div className="grid grid-cols-3 gap-4">
-                      {([['weekday', '平日'], ['weekend', '土日'], ['holiday', '祝日']] as const).map(([key, label]) => (
+                    <div className="grid grid-cols-4 gap-3">
+                      {([['weekday', '平日'], ['saturday', '土曜'], ['sunday', '日曜'], ['holiday', '祝日']] as const).map(([key, label]) => (
                         <div key={key} className="flex items-center gap-2">
                           <span className="text-sm font-medium w-10">{label}</span>
                           <Stepper
@@ -7276,6 +7327,9 @@ const WardScheduleSystem = () => {
                             onClick={(e) => {
                               if (editingLimitDay?.day === d) { setEditingLimitDay(null); } else {
                                 const rect = (e.target as HTMLElement).closest('button')!.getBoundingClientRect();
+                                const initX = Math.min(rect.left, window.innerWidth - 320);
+                                const initY = Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - 380));
+                                setLimitPopPos({ x: initX, y: initY });
                                 setEditingLimitDay({ day: d, x: rect.left, y: rect.bottom });
                               }
                             }}
@@ -7300,45 +7354,75 @@ const WardScheduleSystem = () => {
                       const dow = new Date(targetYear, targetMonth, d).getDay();
                       const dowName = ['日', '月', '火', '水', '木', '金', '土'][dow];
                       const shifts = ['休', '有', '日', '夜', '管夜', '午前半', '午後半'];
-                      const popX = Math.min(editingLimitDay.x, window.innerWidth - 320);
                       return (
                         <>
                           <div className="fixed inset-0 z-40" onClick={() => setEditingLimitDay(null)} />
                           <div
-                            className="fixed z-50 bg-white border-2 border-rose-200 rounded-xl p-4 shadow-2xl w-[300px]"
-                            style={{
-                              left: `${popX}px`,
-                              top: `${Math.max(8, Math.min(editingLimitDay.y + 4, window.innerHeight - 380))}px`,
-                            }}
+                            className="fixed z-50 bg-white border-2 border-rose-200 rounded-xl shadow-2xl w-[300px]"
+                            style={{ left: `${limitPopPos.x}px`, top: `${limitPopPos.y}px` }}
                           >
-                            <div className="flex justify-between items-center mb-3">
-                              <span className="font-bold text-gray-800">{targetMonth + 1}月{d}日（{dowName}）</span>
-                              <div className="flex gap-2">
+                            <div
+                              className="flex justify-between items-center p-3 pb-2 cursor-move bg-rose-50 rounded-t-xl select-none"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                const startX = e.clientX - limitPopPos.x;
+                                const startY = e.clientY - limitPopPos.y;
+                                const onMove = (ev: MouseEvent) => {
+                                  setLimitPopPos({
+                                    x: Math.max(0, Math.min(ev.clientX - startX, window.innerWidth - 320)),
+                                    y: Math.max(0, Math.min(ev.clientY - startY, window.innerHeight - 100)),
+                                  });
+                                };
+                                const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+                                document.addEventListener('mousemove', onMove);
+                                document.addEventListener('mouseup', onUp);
+                              }}
+                              onTouchStart={(e) => {
+                                const touch = e.touches[0];
+                                const startX = touch.clientX - limitPopPos.x;
+                                const startY = touch.clientY - limitPopPos.y;
+                                const onMove = (ev: TouchEvent) => {
+                                  const t = ev.touches[0];
+                                  setLimitPopPos({
+                                    x: Math.max(0, Math.min(t.clientX - startX, window.innerWidth - 320)),
+                                    y: Math.max(0, Math.min(t.clientY - startY, window.innerHeight - 100)),
+                                  });
+                                };
+                                const onUp = () => { document.removeEventListener('touchmove', onMove); document.removeEventListener('touchend', onUp); };
+                                document.addEventListener('touchmove', onMove);
+                                document.addEventListener('touchend', onUp);
+                              }}
+                            >
+                              <span className="font-bold text-gray-800 text-sm">{targetMonth + 1}月{d}日（{dowName}）</span>
+                              <div className="flex gap-2 items-center">
+                                <span className="text-[10px] text-gray-400">ドラッグで移動</span>
                                 <button type="button" onClick={() => { setDailyOverrides(prev => { const next = { ...prev }; delete next[d]; return next; }); setEditingLimitDay(null); }} className="text-xs text-red-500 hover:text-red-700">クリア</button>
-                                <button type="button" onClick={() => setEditingLimitDay(null)} className="text-xs text-gray-500 hover:text-gray-700">✕</button>
+                                <button type="button" onClick={() => setEditingLimitDay(null)} className="text-gray-400 hover:text-gray-600 text-sm">✕</button>
                               </div>
                             </div>
-                            <div className="grid grid-cols-1 gap-1.5">
-                              {shifts.map(shift => (
-                                <div key={shift} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-1.5">
-                                  <span className="text-sm font-medium">{shift}</span>
-                                  <Stepper
-                                    value={current[shift] || 0}
-                                    onChange={(v) => {
-                                      setDailyOverrides(prev => {
-                                        const dayData = { ...(prev[d] || {}) };
-                                        if (v === 0) { delete dayData[shift]; } else { dayData[shift] = v; }
-                                        if (Object.keys(dayData).length === 0) { const next = { ...prev }; delete next[d]; return next; }
-                                        return { ...prev, [d]: dayData };
-                                      });
-                                    }}
-                                    min={0}
-                                    max={20}
-                                  />
-                                </div>
-                              ))}
+                            <div className="p-3 pt-2">
+                              <div className="grid grid-cols-1 gap-1.5">
+                                {shifts.map(shift => (
+                                  <div key={shift} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-1.5">
+                                    <span className="text-sm font-medium">{shift}</span>
+                                    <Stepper
+                                      value={current[shift] || 0}
+                                      onChange={(v) => {
+                                        setDailyOverrides(prev => {
+                                          const dayData = { ...(prev[d] || {}) };
+                                          if (v === 0) { delete dayData[shift]; } else { dayData[shift] = v; }
+                                          if (Object.keys(dayData).length === 0) { const next = { ...prev }; delete next[d]; return next; }
+                                          return { ...prev, [d]: dayData };
+                                        });
+                                      }}
+                                      min={0}
+                                      max={20}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                              <p className="text-[10px] text-gray-400 mt-2">0（∞）= 制限なし</p>
                             </div>
-                            <p className="text-[10px] text-gray-400 mt-2">0（∞）= 制限なし</p>
                           </div>
                         </>
                       );
