@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Calendar, CalendarDays, Settings, Moon, Sun, Clock, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, LogOut, Lock, Download, Upload, Edit2, Save, X, Eye, Users, FileSpreadsheet, Activity, Maximize2, Minimize2, ChevronUp, ChevronDown, RotateCcw, History, BarChart3, UserX, List } from 'lucide-react';
+import { Calendar, CalendarDays, Settings, Moon, Sun, Clock, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, LogOut, Lock, Download, Upload, Edit2, Save, X, Eye, Users, FileSpreadsheet, Activity, Maximize2, Minimize2, ChevronUp, ChevronDown, RotateCcw, History, BarChart3, UserX, List, Shield } from 'lucide-react';
 import * as XLSX from 'xlsx-js-style';
 import { supabase } from './lib/supabase';
 
@@ -21,6 +21,21 @@ type CustomShift = {
   category: 'work' | 'off' | 'half_off' | 'other';
   hours: number;
 };
+
+type RequestLimitConfig = {
+  dailyLimits: {
+    weekday: Record<string, number>;
+    weekend: Record<string, number>;
+    holiday: Record<string, number>;
+  };
+  personalDayTypeLimits: {
+    weekday: number;
+    weekend: number;
+    holiday: number;
+  };
+};
+
+type DailyOverrides = Record<number, Record<string, number>>;
 
 const SHIFT_TYPES = {
   日: { name: '日勤', hours: 7.5, color: 'bg-blue-100 text-blue-700' },
@@ -370,8 +385,14 @@ const WardScheduleSystem = () => {
   const [prevMonthConstraints, setPrevMonthConstraints] = useState<any>({});
   
   // 職員別シフト設定: { nurseId: { maxNightShifts: number, noNightShift: boolean, noDayShift: boolean } }
-  const [nurseShiftPrefs, setNurseShiftPrefs] = useState<Record<number, { maxNightShifts: number; noNightShift: boolean; noDayShift: boolean; excludeFromMaxDaysOff: boolean; maxRequests: number; excludeFromGeneration: boolean }>>({});
+  const [nurseShiftPrefs, setNurseShiftPrefs] = useState<Record<number, { maxNightShifts: number; noNightShift: boolean; noDayShift: boolean; excludeFromMaxDaysOff: boolean; maxRequests: number; excludeFromGeneration: boolean; requestLimits?: Record<string, number> }>>({});
   const [showNurseShiftPrefs, setShowNurseShiftPrefs] = useState(false);
+  const [requestLimitConfig, setRequestLimitConfig] = useState<RequestLimitConfig>({
+    dailyLimits: { weekday: {}, weekend: {}, holiday: {} },
+    personalDayTypeLimits: { weekday: 0, weekend: 0, holiday: 0 },
+  });
+  const [dailyOverrides, setDailyOverrides] = useState<DailyOverrides>({});
+  const [showRequestLimits, setShowRequestLimits] = useState(false);
 
   // 設定読み込み完了フラグ
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -513,6 +534,16 @@ const WardScheduleSystem = () => {
           } catch(e) { console.error('職員設定解析エラー:', e); }
         }
 
+        // 希望制限設定の読み込み
+        const savedReqLimits = await fetchSettingFromDB('requestLimitConfig');
+        if (savedReqLimits) {
+          try { setRequestLimitConfig(JSON.parse(savedReqLimits)); } catch(e) { console.error('requestLimitConfig解析エラー:', e); }
+        }
+        const savedDailyOvr = await fetchSettingFromDB('dailyOverrides');
+        if (savedDailyOvr) {
+          try { setDailyOverrides(JSON.parse(savedDailyOvr)); } catch(e) { console.error('dailyOverrides解析エラー:', e); }
+        }
+
         // 夜勤NG組み合わせの読み込み
         const savedNgPairs = await fetchSettingFromDB('nightNgPairs');
         if (savedNgPairs) {
@@ -601,6 +632,24 @@ const WardScheduleSystem = () => {
     return () => clearTimeout(timer);
   }, [useSolverAPI, settingsLoaded, isAdminAuth]);
 
+  // requestLimitConfigの変更をDBに保存
+  useEffect(() => {
+    if (!settingsLoaded || !isAdminAuth) return;
+    const timer = setTimeout(() => {
+      saveSettingToDB('requestLimitConfig', JSON.stringify(requestLimitConfig));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [requestLimitConfig, settingsLoaded, isAdminAuth]);
+
+  // dailyOverridesの変更をDBに保存
+  useEffect(() => {
+    if (!settingsLoaded || !isAdminAuth) return;
+    const timer = setTimeout(() => {
+      saveSettingToDB('dailyOverrides', JSON.stringify(dailyOverrides));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [dailyOverrides, settingsLoaded, isAdminAuth]);
+
   // ページ離脱時の確認ダイアログ
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -683,7 +732,7 @@ const WardScheduleSystem = () => {
   // バージョン管理: LocalStorage読み込み
   const loadVersionsFromLocalStorage = (year: number, month: number) => {
     try {
-      const key = `scheduleVersions-${dbPrefix}-${year}-${month}`;
+      const key = `scheduleVersions-${department}-${year}-${month}`;
       const data = localStorage.getItem(key);
       if (data) {
         const parsed = JSON.parse(data);
@@ -703,7 +752,7 @@ const WardScheduleSystem = () => {
   // バージョン管理: LocalStorage保存
   const saveVersionsToLocalStorage = (versions: ScheduleVersion[], nextVer: number) => {
     try {
-      const key = `scheduleVersions-${dbPrefix}-${targetYear}-${targetMonth}`;
+      const key = `scheduleVersions-${department}-${targetYear}-${targetMonth}`;
       localStorage.setItem(key, JSON.stringify({ versions, nextVersionNumber: nextVer }));
     } catch (e) {
       console.error('バージョン保存エラー:', e);
@@ -3150,6 +3199,72 @@ const WardScheduleSystem = () => {
     }
   };
 
+  // 3層の希望制限チェック
+  const checkRequestLimit = (nurseId: number, day: number, shiftType: string): { allowed: boolean; reason?: string } => {
+    const monthKey = `${targetYear}-${targetMonth}`;
+    const allReqs = requests[monthKey] || {};
+
+    const dow = new Date(targetYear, targetMonth, day).getDay();
+    const holidayList = getJapaneseHolidays(targetYear, targetMonth);
+    const isHolidayDay = holidayList.includes(day);
+    const dayType: 'weekday' | 'weekend' | 'holiday' =
+      isHolidayDay ? 'holiday' : (dow === 0 || dow === 6) ? 'weekend' : 'weekday';
+
+    // 層2: 日別オーバーライドチェック（層1より優先）
+    const dayOverride = dailyOverrides[day];
+    if (dayOverride && dayOverride[shiftType] !== undefined && dayOverride[shiftType] > 0) {
+      let count = 0;
+      Object.entries(allReqs).forEach(([nid, reqs]: [string, any]) => {
+        if (Number(nid) !== nurseId && reqs[day] === shiftType) count++;
+      });
+      if (count >= dayOverride[shiftType]) {
+        return { allowed: false, reason: `${day}日の「${shiftType}」は${dayOverride[shiftType]}人までです（現在${count}人）` };
+      }
+    } else {
+      // 層1-A: 1日あたりの希望人数上限チェック（日別オーバーライドがない場合）
+      const dailyLimit = requestLimitConfig.dailyLimits[dayType]?.[shiftType];
+      if (dailyLimit !== undefined && dailyLimit > 0) {
+        let count = 0;
+        Object.entries(allReqs).forEach(([nid, reqs]: [string, any]) => {
+          if (Number(nid) !== nurseId && reqs[day] === shiftType) count++;
+        });
+        if (count >= dailyLimit) {
+          return { allowed: false, reason: `${dayType === 'weekday' ? '平日' : dayType === 'weekend' ? '土日' : '祝日'}の「${shiftType}」は1日${dailyLimit}人までです（現在${count}人）` };
+        }
+      }
+    }
+
+    // 層1-B: 1人あたりの曜日タイプ別希望日数上限
+    const personalLimit = requestLimitConfig.personalDayTypeLimits[dayType];
+    if (personalLimit > 0) {
+      const myReqs = allReqs[String(nurseId)] || {};
+      let dayTypeCount = 0;
+      Object.entries(myReqs).forEach(([d, v]: [string, any]) => {
+        if (v === '明' || v === '管明') return;
+        const dd = new Date(targetYear, targetMonth, Number(d)).getDay();
+        const isH = holidayList.includes(Number(d));
+        const dt = isH ? 'holiday' : (dd === 0 || dd === 6) ? 'weekend' : 'weekday';
+        if (dt === dayType) dayTypeCount++;
+      });
+      if (dayTypeCount >= personalLimit) {
+        return { allowed: false, reason: `${dayType === 'weekday' ? '平日' : dayType === 'weekend' ? '土日' : '祝日'}の希望は${personalLimit}日までです（現在${dayTypeCount}日）` };
+      }
+    }
+
+    // 層3: 人別×シフト別の月間上限
+    const prefs = nurseShiftPrefs[nurseId];
+    if (prefs?.requestLimits && prefs.requestLimits[shiftType] !== undefined && prefs.requestLimits[shiftType] > 0) {
+      const myReqs = allReqs[String(nurseId)] || {};
+      let shiftCount = 0;
+      Object.values(myReqs).forEach((v: any) => { if (v === shiftType) shiftCount++; });
+      if (shiftCount >= prefs.requestLimits[shiftType]) {
+        return { allowed: false, reason: `「${shiftType}」の希望は月${prefs.requestLimits[shiftType]}回までです（現在${shiftCount}回）` };
+      }
+    }
+
+    return { allowed: true };
+  };
+
   // 職員用希望入力：夜勤対応のセルクリックハンドラ
   const handleStaffRequestClick = (day: number, _currentRequest: string | null) => {
     const days = getDaysInMonth(targetYear, targetMonth);
@@ -3190,6 +3305,15 @@ const WardScheduleSystem = () => {
       } else {
         const idx = currentRequest ? staffCycle.indexOf(currentRequest) : -1;
         newValue = staffCycle[(idx + 1) % staffCycle.length];
+      }
+
+      // 3層の希望制限チェック
+      if (newValue && !adminAsStaff) {
+        const check = checkRequestLimit(staffNurseId!, day, newValue);
+        if (!check.allowed) {
+          alert(check.reason);
+          return prev;
+        }
       }
 
       // ① 「夜」or「管夜」解除時 → 自動セットした明系・休のみクリア
@@ -3270,6 +3394,47 @@ const WardScheduleSystem = () => {
     return count;
   };
 
+  const getRequestStatus = (day: number) => {
+    const monthKey = `${targetYear}-${targetMonth}`;
+    const allReqs = requests[monthKey] || {};
+    const dow = new Date(targetYear, targetMonth, day).getDay();
+    const holidayList = getJapaneseHolidays(targetYear, targetMonth);
+    const isHolidayDay = holidayList.includes(day);
+    const dayType: 'weekday' | 'weekend' | 'holiday' = isHolidayDay ? 'holiday' : (dow === 0 || dow === 6) ? 'weekend' : 'weekday';
+
+    const counts: Record<string, { current: number; limit: number | null }> = {};
+    Object.entries(allReqs).forEach(([nid, reqs]: [string, any]) => {
+      if (Number(nid) === staffNurseId) return;
+      const val = reqs[day];
+      if (val && val !== '明' && val !== '管明') {
+        if (!counts[val]) counts[val] = { current: 0, limit: null };
+        counts[val].current++;
+      }
+    });
+
+    // Set limits - daily overrides take priority
+    const dayOverride = dailyOverrides[day] || {};
+    const defaultLimits = requestLimitConfig.dailyLimits[dayType] || {};
+    const allLimits = { ...defaultLimits, ...dayOverride };
+
+    Object.keys(counts).forEach(shift => {
+      if (dayOverride[shift] !== undefined && dayOverride[shift] > 0) {
+        counts[shift].limit = dayOverride[shift];
+      } else if (defaultLimits[shift] !== undefined && defaultLimits[shift] > 0) {
+        counts[shift].limit = defaultLimits[shift];
+      }
+    });
+
+    // Also show shifts that have limits but 0 count
+    Object.entries(allLimits).forEach(([shift, limit]) => {
+      if ((limit as number) > 0 && !counts[shift]) {
+        counts[shift] = { current: 0, limit: limit as number };
+      }
+    });
+
+    return counts;
+  };
+
   // ============================================
   // 画面レンダリング
   // ============================================
@@ -3313,6 +3478,7 @@ const WardScheduleSystem = () => {
               職員用（休み希望入力）
             </button>
           </div>
+
 
 
           <p className="text-center text-xs text-gray-400 mt-8">
@@ -3435,6 +3601,9 @@ const WardScheduleSystem = () => {
                 </button>
                 <button onClick={async () => { setAuditLogs(await fetchAuditLogs()); setShowAuditLog(true); }} className="px-3 py-2 bg-orange-50 hover:bg-orange-100 text-orange-700 rounded-lg text-sm flex items-center gap-1">
                   <History size={16} /> 変更履歴
+                </button>
+                <button onClick={() => setShowRequestLimits(true)} className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg text-sm flex items-center gap-1">
+                  <Shield size={16} /> 希望制限
                 </button>
                 <button onClick={() => { setShowPasswordChange(true); setNewPasswordInput(''); setNewPasswordConfirm(''); setPasswordChangeError(''); }} className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg text-sm flex items-center gap-1">
                   <Lock size={16} /> パスワード変更
@@ -4684,11 +4853,29 @@ const WardScheduleSystem = () => {
                       )}
                     </button>
                     
-                    {othersCount > 0 && (
-                      <div className="absolute -top-1 -right-1 w-5 h-5 md:w-6 md:h-6 rounded-full bg-blue-500 text-white text-xs flex items-center justify-center font-bold shadow">
-                        {othersCount}
-                      </div>
-                    )}
+                    {(() => {
+                      const status = getRequestStatus(day);
+                      const entries = Object.entries(status);
+                      if (entries.length === 0 && othersCount > 0) {
+                        return (
+                          <div className="absolute -top-1 -right-1 w-5 h-5 md:w-6 md:h-6 rounded-full bg-blue-500 text-white text-xs flex items-center justify-center font-bold shadow">
+                            {othersCount}
+                          </div>
+                        );
+                      }
+                      if (entries.length > 0) {
+                        return (
+                          <div className="absolute -top-1 -right-1 max-w-[80px] bg-white/90 border border-gray-200 rounded px-0.5 py-0 text-[8px] leading-tight shadow">
+                            {entries.slice(0, 3).map(([shift, info]) => (
+                              <span key={shift} className={`block ${info.limit !== null && info.current >= info.limit ? 'text-red-600 font-bold' : 'text-gray-600'}`}>
+                                {shift}:{info.current}{info.limit !== null ? `/${info.limit}` : ''}
+                              </span>
+                            ))}
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
                   </div>
                 );
               })}
@@ -6782,6 +6969,156 @@ const WardScheduleSystem = () => {
           </div>
         )}
 
+        {/* 希望制限設定モーダル */}
+        {showRequestLimits && (
+          <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
+            <div className="min-h-full flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+                <div className="flex items-center justify-between p-6 border-b sticky top-0 bg-white rounded-t-2xl z-10">
+                  <h3 className="text-xl font-bold flex items-center gap-2"><Shield className="text-rose-600" size={24} /> 希望入力の制限設定</h3>
+                  <button onClick={() => setShowRequestLimits(false)} className="p-2 hover:bg-gray-100 rounded-full">
+                    <X size={24} />
+                  </button>
+                </div>
+                <div className="p-6 space-y-6">
+                  {/* セクション1: 曜日タイプ別の1日あたり人数上限 */}
+                  <div>
+                    <h4 className="font-bold text-gray-800 mb-2">曜日タイプ別の1日あたり人数上限</h4>
+                    <p className="text-xs text-gray-500 mb-2">各シフトの1日あたり希望可能人数（0=無制限）</p>
+                    <div className="overflow-auto">
+                      <table className="w-full border-collapse text-sm">
+                        <thead>
+                          <tr className="bg-gray-100">
+                            <th className="border p-2 text-left">シフト</th>
+                            <th className="border p-2 text-center">平日</th>
+                            <th className="border p-2 text-center">土日</th>
+                            <th className="border p-2 text-center">祝日</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {['休', '有', '夜', '管夜'].map(shift => (
+                            <tr key={shift}>
+                              <td className="border p-2 font-medium">{shift}</td>
+                              {(['weekday', 'weekend', 'holiday'] as const).map(dt => (
+                                <td key={dt} className="border p-2 text-center">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    max={99}
+                                    value={requestLimitConfig.dailyLimits[dt][shift] || 0}
+                                    onChange={(e) => {
+                                      const val = Math.max(0, parseInt(e.target.value) || 0);
+                                      setRequestLimitConfig(prev => ({
+                                        ...prev,
+                                        dailyLimits: {
+                                          ...prev.dailyLimits,
+                                          [dt]: { ...prev.dailyLimits[dt], [shift]: val }
+                                        }
+                                      }));
+                                    }}
+                                    className="w-16 px-2 py-1 border rounded text-center"
+                                  />
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* セクション2: 1人あたりの曜日タイプ別希望日数上限 */}
+                  <div>
+                    <h4 className="font-bold text-gray-800 mb-2">1人あたりの曜日タイプ別希望日数上限</h4>
+                    <p className="text-xs text-gray-500 mb-2">各職員がその曜日タイプに入力できる希望数（0=無制限）</p>
+                    <div className="grid grid-cols-3 gap-4">
+                      {([['weekday', '平日'], ['weekend', '土日'], ['holiday', '祝日']] as const).map(([key, label]) => (
+                        <div key={key} className="flex items-center gap-2">
+                          <span className="text-sm font-medium w-10">{label}</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={31}
+                            value={requestLimitConfig.personalDayTypeLimits[key]}
+                            onChange={(e) => {
+                              const val = Math.max(0, parseInt(e.target.value) || 0);
+                              setRequestLimitConfig(prev => ({
+                                ...prev,
+                                personalDayTypeLimits: { ...prev.personalDayTypeLimits, [key]: val }
+                              }));
+                            }}
+                            className="w-16 px-2 py-1 border rounded text-center"
+                          />
+                          <span className="text-sm text-gray-500">日まで</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* セクション3: 日別の個別制限 */}
+                  <div>
+                    <h4 className="font-bold text-gray-800 mb-2">日別の個別制限</h4>
+                    <p className="text-xs text-gray-500 mb-2">特定の日にシフト別の上限を設定（曜日タイプ別設定より優先）</p>
+                    <div className="grid grid-cols-7 gap-1 mb-2">
+                      {['日', '月', '火', '水', '木', '金', '土'].map((d, i) => (
+                        <div key={d} className={`text-center text-xs font-bold py-1 ${i === 0 ? 'text-red-500' : i === 6 ? 'text-blue-500' : 'text-gray-600'}`}>{d}</div>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-7 gap-1">
+                      {Array.from({ length: new Date(targetYear, targetMonth, 1).getDay() }, (_, i) => (
+                        <div key={`e-${i}`} />
+                      ))}
+                      {Array.from({ length: getDaysInMonth(targetYear, targetMonth) }, (_, i) => {
+                        const d = i + 1;
+                        const hasOverride = dailyOverrides[d] && Object.values(dailyOverrides[d]).some(v => v > 0);
+                        const dayOfWeek = new Date(targetYear, targetMonth, d).getDay();
+                        return (
+                          <button
+                            key={d}
+                            onClick={() => {
+                              const current = dailyOverrides[d] || {};
+                              const input = prompt(
+                                `${d}日のシフト別上限を設定\n形式: シフト=人数（カンマ区切り）\n例: 休=2,有=1\n現在: ${Object.entries(current).map(([k,v]) => `${k}=${v}`).join(',') || 'なし'}\n空欄でクリア`,
+                                Object.entries(current).map(([k,v]) => `${k}=${v}`).join(',')
+                              );
+                              if (input === null) return;
+                              if (input.trim() === '') {
+                                setDailyOverrides(prev => {
+                                  const next = { ...prev };
+                                  delete next[d];
+                                  return next;
+                                });
+                                return;
+                              }
+                              const parsed: Record<string, number> = {};
+                              input.split(',').forEach(part => {
+                                const [shift, num] = part.trim().split('=');
+                                if (shift && num) parsed[shift.trim()] = Math.max(0, parseInt(num.trim()) || 0);
+                              });
+                              setDailyOverrides(prev => ({ ...prev, [d]: parsed }));
+                            }}
+                            className={`aspect-square rounded-lg border text-sm flex flex-col items-center justify-center transition-all ${
+                              hasOverride ? 'bg-rose-100 border-rose-300 font-bold' : 'bg-white border-gray-200 hover:border-rose-300'
+                            } ${dayOfWeek === 0 ? 'text-red-500' : dayOfWeek === 6 ? 'text-blue-500' : ''}`}
+                          >
+                            <span>{d}</span>
+                            {hasOverride && <span className="text-[8px] text-rose-600">設定済</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="bg-gray-50 rounded-xl p-3 text-xs text-gray-500">
+                    <p><strong>優先順位：</strong>日別制限 &gt; 曜日タイプ別制限。日別制限が設定されている日はその値が使われ、それ以外の日は曜日タイプ別の設定が適用されます。</p>
+                    <p className="mt-1">設定は自動保存されます。</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* 職員別シフト設定モーダル */}
         {showNurseShiftPrefs && (
           <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
@@ -6815,6 +7152,7 @@ const WardScheduleSystem = () => {
                         <th className="border p-2 text-center">日勤なし</th>
                         <th className="border p-2 text-center">休日上限除外</th>
                         <th className="border p-2 text-center">希望上限</th>
+                        <th className="border p-2 text-center">シフト別制限</th>
                         <th className="border p-2 text-center">生成除外</th>
                       </tr>
                     </thead>
@@ -6902,6 +7240,32 @@ const WardScheduleSystem = () => {
                                   <option key={i} value={i}>{i === 0 ? '無制限' : `${i}個`}</option>
                                 ))}
                               </select>
+                            </td>
+                            <td className="border p-2 text-center">
+                              <button
+                                onClick={() => {
+                                  const current = pref.requestLimits || {};
+                                  const input = prompt(
+                                    `${nurse.name}のシフト別月間上限\n形式: シフト=回数（カンマ区切り）\n例: 休=5,有=3,夜=2\n現在: ${Object.entries(current).filter(([,v]) => v > 0).map(([k,v]) => `${k}=${v}`).join(',') || 'なし'}\n空欄でクリア（0=無制限）`,
+                                    Object.entries(current).filter(([,v]) => v > 0).map(([k,v]) => `${k}=${v}`).join(',')
+                                  );
+                                  if (input === null) return;
+                                  const parsed: Record<string, number> = {};
+                                  if (input.trim() !== '') {
+                                    input.split(',').forEach(part => {
+                                      const [shift, num] = part.trim().split('=');
+                                      if (shift && num) parsed[shift.trim()] = Math.max(0, parseInt(num.trim()) || 0);
+                                    });
+                                  }
+                                  setNurseShiftPrefs(prev => ({
+                                    ...prev,
+                                    [nurse.id]: { ...pref, requestLimits: parsed }
+                                  }));
+                                }}
+                                className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded text-xs"
+                              >
+                                {pref.requestLimits && Object.values(pref.requestLimits).some(v => v > 0) ? '設定済' : '設定'}
+                              </button>
                             </td>
                             <td className="border p-2 text-center">
                               <input
