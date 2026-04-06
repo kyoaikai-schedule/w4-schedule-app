@@ -393,6 +393,7 @@ const WardScheduleSystem = () => {
   });
   const [dailyOverrides, setDailyOverrides] = useState<DailyOverrides>({});
   const [showRequestLimits, setShowRequestLimits] = useState(false);
+  const [editingLimitDay, setEditingLimitDay] = useState<number | null>(null);
 
   // 設定読み込み完了フラグ
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -4601,38 +4602,61 @@ const WardScheduleSystem = () => {
                         return (
                           <button
                             key={d}
-                            onClick={() => {
-                              const current = dailyOverrides[d] || {};
-                              const input = prompt(
-                                `${d}日のシフト別上限を設定\n形式: シフト=人数（カンマ区切り）\n例: 休=2,有=1\n現在: ${Object.entries(current).map(([k,v]) => `${k}=${v}`).join(',') || 'なし'}\n空欄でクリア`,
-                                Object.entries(current).map(([k,v]) => `${k}=${v}`).join(',')
-                              );
-                              if (input === null) return;
-                              if (input.trim() === '') {
-                                setDailyOverrides(prev => {
-                                  const next = { ...prev };
-                                  delete next[d];
-                                  return next;
-                                });
-                                return;
-                              }
-                              const parsed: Record<string, number> = {};
-                              input.split(',').forEach(part => {
-                                const [shift, num] = part.trim().split('=');
-                                if (shift && num) parsed[shift.trim()] = Math.max(0, parseInt(num.trim()) || 0);
-                              });
-                              setDailyOverrides(prev => ({ ...prev, [d]: parsed }));
-                            }}
+                            onClick={() => setEditingLimitDay(d === editingLimitDay ? null : d)}
                             className={`aspect-square rounded-lg border text-sm flex flex-col items-center justify-center transition-all ${
+                              d === editingLimitDay ? 'bg-rose-200 border-rose-400 ring-2 ring-rose-400' :
                               hasOverride ? 'bg-rose-100 border-rose-300 font-bold' : 'bg-white border-gray-200 hover:border-rose-300'
                             } ${dayOfWeek === 0 ? 'text-red-500' : dayOfWeek === 6 ? 'text-blue-500' : ''}`}
                           >
                             <span>{d}</span>
-                            {hasOverride && <span className="text-[8px] text-rose-600">設定済</span>}
+                            {hasOverride && (
+                              <span className="text-[7px] text-rose-600 leading-tight">
+                                {Object.entries(dailyOverrides[d]).filter(([,v]) => v > 0).map(([k,v]) => `${k}${v}`).join(' ')}
+                              </span>
+                            )}
                           </button>
                         );
                       })}
                     </div>
+                    {editingLimitDay && (() => {
+                      const d = editingLimitDay;
+                      const current = dailyOverrides[d] || {};
+                      const dow = new Date(targetYear, targetMonth, d).getDay();
+                      const dowName = ['日', '月', '火', '水', '木', '金', '土'][dow];
+                      const shifts = ['休', '有', '日', '夜', '管夜', '午前半', '午後半'];
+                      return (
+                        <div className="mt-2 bg-white border-2 border-rose-200 rounded-xl p-4 shadow-lg">
+                          <div className="flex justify-between items-center mb-3">
+                            <span className="font-bold text-gray-800">{targetMonth + 1}月{d}日（{dowName}）のシフト別上限</span>
+                            <div className="flex gap-2">
+                              <button type="button" onClick={() => { setDailyOverrides(prev => { const next = { ...prev }; delete next[d]; return next; }); setEditingLimitDay(null); }} className="text-xs text-red-500 hover:text-red-700">クリア</button>
+                              <button type="button" onClick={() => setEditingLimitDay(null)} className="text-xs text-gray-500 hover:text-gray-700">閉じる</button>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            {shifts.map(shift => (
+                              <div key={shift} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+                                <span className="text-sm font-medium">{shift}</span>
+                                <Stepper
+                                  value={current[shift] || 0}
+                                  onChange={(v) => {
+                                    setDailyOverrides(prev => {
+                                      const dayData = { ...(prev[d] || {}) };
+                                      if (v === 0) { delete dayData[shift]; } else { dayData[shift] = v; }
+                                      if (Object.keys(dayData).length === 0) { const next = { ...prev }; delete next[d]; return next; }
+                                      return { ...prev, [d]: dayData };
+                                    });
+                                  }}
+                                  min={0}
+                                  max={20}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                          <p className="text-[10px] text-gray-400 mt-2">0（∞）= 制限なし</p>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   <div className="bg-gray-50 rounded-xl p-3 text-xs text-gray-500">
@@ -7234,38 +7258,61 @@ const WardScheduleSystem = () => {
                         return (
                           <button
                             key={d}
-                            onClick={() => {
-                              const current = dailyOverrides[d] || {};
-                              const input = prompt(
-                                `${d}日のシフト別上限を設定\n形式: シフト=人数（カンマ区切り）\n例: 休=2,有=1\n現在: ${Object.entries(current).map(([k,v]) => `${k}=${v}`).join(',') || 'なし'}\n空欄でクリア`,
-                                Object.entries(current).map(([k,v]) => `${k}=${v}`).join(',')
-                              );
-                              if (input === null) return;
-                              if (input.trim() === '') {
-                                setDailyOverrides(prev => {
-                                  const next = { ...prev };
-                                  delete next[d];
-                                  return next;
-                                });
-                                return;
-                              }
-                              const parsed: Record<string, number> = {};
-                              input.split(',').forEach(part => {
-                                const [shift, num] = part.trim().split('=');
-                                if (shift && num) parsed[shift.trim()] = Math.max(0, parseInt(num.trim()) || 0);
-                              });
-                              setDailyOverrides(prev => ({ ...prev, [d]: parsed }));
-                            }}
+                            onClick={() => setEditingLimitDay(d === editingLimitDay ? null : d)}
                             className={`aspect-square rounded-lg border text-sm flex flex-col items-center justify-center transition-all ${
+                              d === editingLimitDay ? 'bg-rose-200 border-rose-400 ring-2 ring-rose-400' :
                               hasOverride ? 'bg-rose-100 border-rose-300 font-bold' : 'bg-white border-gray-200 hover:border-rose-300'
                             } ${dayOfWeek === 0 ? 'text-red-500' : dayOfWeek === 6 ? 'text-blue-500' : ''}`}
                           >
                             <span>{d}</span>
-                            {hasOverride && <span className="text-[8px] text-rose-600">設定済</span>}
+                            {hasOverride && (
+                              <span className="text-[7px] text-rose-600 leading-tight">
+                                {Object.entries(dailyOverrides[d]).filter(([,v]) => v > 0).map(([k,v]) => `${k}${v}`).join(' ')}
+                              </span>
+                            )}
                           </button>
                         );
                       })}
                     </div>
+                    {editingLimitDay && (() => {
+                      const d = editingLimitDay;
+                      const current = dailyOverrides[d] || {};
+                      const dow = new Date(targetYear, targetMonth, d).getDay();
+                      const dowName = ['日', '月', '火', '水', '木', '金', '土'][dow];
+                      const shifts = ['休', '有', '日', '夜', '管夜', '午前半', '午後半'];
+                      return (
+                        <div className="mt-2 bg-white border-2 border-rose-200 rounded-xl p-4 shadow-lg">
+                          <div className="flex justify-between items-center mb-3">
+                            <span className="font-bold text-gray-800">{targetMonth + 1}月{d}日（{dowName}）のシフト別上限</span>
+                            <div className="flex gap-2">
+                              <button type="button" onClick={() => { setDailyOverrides(prev => { const next = { ...prev }; delete next[d]; return next; }); setEditingLimitDay(null); }} className="text-xs text-red-500 hover:text-red-700">クリア</button>
+                              <button type="button" onClick={() => setEditingLimitDay(null)} className="text-xs text-gray-500 hover:text-gray-700">閉じる</button>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            {shifts.map(shift => (
+                              <div key={shift} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+                                <span className="text-sm font-medium">{shift}</span>
+                                <Stepper
+                                  value={current[shift] || 0}
+                                  onChange={(v) => {
+                                    setDailyOverrides(prev => {
+                                      const dayData = { ...(prev[d] || {}) };
+                                      if (v === 0) { delete dayData[shift]; } else { dayData[shift] = v; }
+                                      if (Object.keys(dayData).length === 0) { const next = { ...prev }; delete next[d]; return next; }
+                                      return { ...prev, [d]: dayData };
+                                    });
+                                  }}
+                                  min={0}
+                                  max={20}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                          <p className="text-[10px] text-gray-400 mt-2">0（∞）= 制限なし</p>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   <div className="bg-gray-50 rounded-xl p-3 text-xs text-gray-500">
