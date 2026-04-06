@@ -3199,6 +3199,31 @@ const WardScheduleSystem = () => {
     }
   };
 
+  // ステッパーUI（希望制限設定用）
+  const Stepper = ({ value, onChange, min = 0, max = 20 }: { value: number; onChange: (v: number) => void; min?: number; max?: number }) => (
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        onClick={() => onChange(Math.max(min, value - 1))}
+        className="w-7 h-7 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold text-sm flex items-center justify-center transition-colors"
+        disabled={value <= min}
+      >
+        −
+      </button>
+      <span className={`w-8 text-center text-sm font-bold ${value === 0 ? 'text-gray-300' : 'text-gray-700'}`}>
+        {value === 0 ? '∞' : value}
+      </span>
+      <button
+        type="button"
+        onClick={() => onChange(Math.min(max, value + 1))}
+        className="w-7 h-7 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold text-sm flex items-center justify-center transition-colors"
+        disabled={value >= max}
+      >
+        +
+      </button>
+    </div>
+  );
+
   // 3層の希望制限チェック
   const checkRequestLimit = (nurseId: number, day: number, shiftType: string): { allowed: boolean; reason?: string } => {
     const monthKey = `${targetYear}-${targetMonth}`;
@@ -4477,6 +4502,148 @@ const WardScheduleSystem = () => {
           </div>
           );
         })()}
+
+        {/* 希望制限設定モーダル（ダッシュボード用） */}
+        {showRequestLimits && (
+          <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
+            <div className="min-h-full flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+                <div className="flex items-center justify-between p-6 border-b sticky top-0 bg-white rounded-t-2xl z-10">
+                  <h3 className="text-xl font-bold flex items-center gap-2"><Shield className="text-rose-600" size={24} /> 希望入力の制限設定</h3>
+                  <button onClick={() => setShowRequestLimits(false)} className="p-2 hover:bg-gray-100 rounded-full">
+                    <X size={24} />
+                  </button>
+                </div>
+                <div className="p-6 space-y-6">
+                  {/* セクション1: 曜日タイプ別の1日あたり人数上限 */}
+                  <div>
+                    <h4 className="font-bold text-gray-800 mb-2">曜日タイプ別の1日あたり人数上限</h4>
+                    <p className="text-xs text-gray-500 mb-2">各シフトの1日あたり希望可能人数（0=無制限）</p>
+                    <div className="overflow-auto">
+                      <table className="w-full border-collapse text-sm">
+                        <thead>
+                          <tr className="bg-gray-100">
+                            <th className="border p-2 text-left">シフト</th>
+                            <th className="border p-2 text-center">平日</th>
+                            <th className="border p-2 text-center">土日</th>
+                            <th className="border p-2 text-center">祝日</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {['休', '有', '夜', '管夜'].map(shift => (
+                            <tr key={shift}>
+                              <td className="border p-2 font-medium">{shift}</td>
+                              {(['weekday', 'weekend', 'holiday'] as const).map(dt => (
+                                <td key={dt} className="border p-2 text-center">
+                                  <Stepper
+                                    value={requestLimitConfig.dailyLimits[dt][shift] || 0}
+                                    max={99}
+                                    onChange={(val) => {
+                                      setRequestLimitConfig(prev => ({
+                                        ...prev,
+                                        dailyLimits: {
+                                          ...prev.dailyLimits,
+                                          [dt]: { ...prev.dailyLimits[dt], [shift]: val }
+                                        }
+                                      }));
+                                    }}
+                                  />
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* セクション2: 1人あたりの曜日タイプ別希望日数上限 */}
+                  <div>
+                    <h4 className="font-bold text-gray-800 mb-2">1人あたりの曜日タイプ別希望日数上限</h4>
+                    <p className="text-xs text-gray-500 mb-2">各職員がその曜日タイプに入力できる希望数（0=無制限）</p>
+                    <div className="grid grid-cols-3 gap-4">
+                      {([['weekday', '平日'], ['weekend', '土日'], ['holiday', '祝日']] as const).map(([key, label]) => (
+                        <div key={key} className="flex items-center gap-2">
+                          <span className="text-sm font-medium w-10">{label}</span>
+                          <Stepper
+                            value={requestLimitConfig.personalDayTypeLimits[key]}
+                            max={31}
+                            onChange={(val) => {
+                              setRequestLimitConfig(prev => ({
+                                ...prev,
+                                personalDayTypeLimits: { ...prev.personalDayTypeLimits, [key]: val }
+                              }));
+                            }}
+                          />
+                          <span className="text-sm text-gray-500">日まで</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* セクション3: 日別の個別制限 */}
+                  <div>
+                    <h4 className="font-bold text-gray-800 mb-2">日別の個別制限</h4>
+                    <p className="text-xs text-gray-500 mb-2">特定の日にシフト別の上限を設定（曜日タイプ別設定より優先）</p>
+                    <div className="grid grid-cols-7 gap-1 mb-2">
+                      {['日', '月', '火', '水', '木', '金', '土'].map((d, i) => (
+                        <div key={d} className={`text-center text-xs font-bold py-1 ${i === 0 ? 'text-red-500' : i === 6 ? 'text-blue-500' : 'text-gray-600'}`}>{d}</div>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-7 gap-1">
+                      {Array.from({ length: new Date(targetYear, targetMonth, 1).getDay() }, (_, i) => (
+                        <div key={`de-${i}`} />
+                      ))}
+                      {Array.from({ length: getDaysInMonth(targetYear, targetMonth) }, (_, i) => {
+                        const d = i + 1;
+                        const hasOverride = dailyOverrides[d] && Object.values(dailyOverrides[d]).some(v => v > 0);
+                        const dayOfWeek = new Date(targetYear, targetMonth, d).getDay();
+                        return (
+                          <button
+                            key={d}
+                            onClick={() => {
+                              const current = dailyOverrides[d] || {};
+                              const input = prompt(
+                                `${d}日のシフト別上限を設定\n形式: シフト=人数（カンマ区切り）\n例: 休=2,有=1\n現在: ${Object.entries(current).map(([k,v]) => `${k}=${v}`).join(',') || 'なし'}\n空欄でクリア`,
+                                Object.entries(current).map(([k,v]) => `${k}=${v}`).join(',')
+                              );
+                              if (input === null) return;
+                              if (input.trim() === '') {
+                                setDailyOverrides(prev => {
+                                  const next = { ...prev };
+                                  delete next[d];
+                                  return next;
+                                });
+                                return;
+                              }
+                              const parsed: Record<string, number> = {};
+                              input.split(',').forEach(part => {
+                                const [shift, num] = part.trim().split('=');
+                                if (shift && num) parsed[shift.trim()] = Math.max(0, parseInt(num.trim()) || 0);
+                              });
+                              setDailyOverrides(prev => ({ ...prev, [d]: parsed }));
+                            }}
+                            className={`aspect-square rounded-lg border text-sm flex flex-col items-center justify-center transition-all ${
+                              hasOverride ? 'bg-rose-100 border-rose-300 font-bold' : 'bg-white border-gray-200 hover:border-rose-300'
+                            } ${dayOfWeek === 0 ? 'text-red-500' : dayOfWeek === 6 ? 'text-blue-500' : ''}`}
+                          >
+                            <span>{d}</span>
+                            {hasOverride && <span className="text-[8px] text-rose-600">設定済</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="bg-gray-50 rounded-xl p-3 text-xs text-gray-500">
+                    <p><strong>優先順位：</strong>日別制限 &gt; 曜日タイプ別制限。日別制限が設定されている日はその値が使われ、それ以外の日は曜日タイプ別の設定が適用されます。</p>
+                    <p className="mt-1">設定は自動保存されます。</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -7001,13 +7168,10 @@ const WardScheduleSystem = () => {
                               <td className="border p-2 font-medium">{shift}</td>
                               {(['weekday', 'weekend', 'holiday'] as const).map(dt => (
                                 <td key={dt} className="border p-2 text-center">
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    max={99}
+                                  <Stepper
                                     value={requestLimitConfig.dailyLimits[dt][shift] || 0}
-                                    onChange={(e) => {
-                                      const val = Math.max(0, parseInt(e.target.value) || 0);
+                                    max={99}
+                                    onChange={(val) => {
                                       setRequestLimitConfig(prev => ({
                                         ...prev,
                                         dailyLimits: {
@@ -7016,7 +7180,6 @@ const WardScheduleSystem = () => {
                                         }
                                       }));
                                     }}
-                                    className="w-16 px-2 py-1 border rounded text-center"
                                   />
                                 </td>
                               ))}
@@ -7035,19 +7198,15 @@ const WardScheduleSystem = () => {
                       {([['weekday', '平日'], ['weekend', '土日'], ['holiday', '祝日']] as const).map(([key, label]) => (
                         <div key={key} className="flex items-center gap-2">
                           <span className="text-sm font-medium w-10">{label}</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={31}
+                          <Stepper
                             value={requestLimitConfig.personalDayTypeLimits[key]}
-                            onChange={(e) => {
-                              const val = Math.max(0, parseInt(e.target.value) || 0);
+                            max={31}
+                            onChange={(val) => {
                               setRequestLimitConfig(prev => ({
                                 ...prev,
                                 personalDayTypeLimits: { ...prev.personalDayTypeLimits, [key]: val }
                               }));
                             }}
-                            className="w-16 px-2 py-1 border rounded text-center"
                           />
                           <span className="text-sm text-gray-500">日まで</span>
                         </div>
