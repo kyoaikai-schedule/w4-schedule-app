@@ -4632,16 +4632,17 @@ const WardScheduleSystem = () => {
                                 setEditingLimitDay({ day: d, x: rect.left, y: rect.bottom });
                               }
                             }}
-                            className={`aspect-square rounded-lg border text-sm flex flex-col items-center justify-center transition-all ${
-                              editingLimitDay?.day === d ? 'bg-rose-200 border-rose-400 ring-2 ring-rose-400' :
-                              hasOverride ? 'bg-rose-100 border-rose-300 font-bold' : 'bg-white border-gray-200 hover:border-rose-300'
-                            } ${dayOfWeek === 0 ? 'text-red-500' : dayOfWeek === 6 ? 'text-blue-500' : ''}`}
+                            className={`min-h-[56px] rounded-lg border text-sm flex flex-col items-center justify-center transition-all px-1 py-1 ${
+                              hasOverride ? 'bg-rose-100 border-rose-400 shadow-sm' : 'bg-white border-gray-200 hover:border-rose-300'
+                            } ${editingLimitDay?.day === d ? 'ring-2 ring-rose-500' : ''} ${dayOfWeek === 0 ? 'text-red-500' : dayOfWeek === 6 ? 'text-blue-500' : ''}`}
                           >
-                            <span>{d}</span>
+                            <span className="font-bold">{d}</span>
                             {hasOverride && (
-                              <span className="text-[7px] text-rose-600 leading-tight">
-                                {Object.entries(dailyOverrides[d]).filter(([,v]) => v > 0).map(([k,v]) => `${k}${v}`).join(' ')}
-                              </span>
+                              <div className="flex flex-wrap justify-center gap-x-1 mt-0.5">
+                                {Object.entries(dailyOverrides[d]).filter(([,v]) => v > 0).map(([k, v]) => (
+                                  <span key={k} className="text-[10px] font-bold text-rose-700 leading-tight">{k}{v}</span>
+                                ))}
+                              </div>
                             )}
                           </button>
                         );
@@ -7337,16 +7338,17 @@ const WardScheduleSystem = () => {
                                 setEditingLimitDay({ day: d, x: rect.left, y: rect.bottom });
                               }
                             }}
-                            className={`aspect-square rounded-lg border text-sm flex flex-col items-center justify-center transition-all ${
-                              editingLimitDay?.day === d ? 'bg-rose-200 border-rose-400 ring-2 ring-rose-400' :
-                              hasOverride ? 'bg-rose-100 border-rose-300 font-bold' : 'bg-white border-gray-200 hover:border-rose-300'
-                            } ${dayOfWeek === 0 ? 'text-red-500' : dayOfWeek === 6 ? 'text-blue-500' : ''}`}
+                            className={`min-h-[56px] rounded-lg border text-sm flex flex-col items-center justify-center transition-all px-1 py-1 ${
+                              hasOverride ? 'bg-rose-100 border-rose-400 shadow-sm' : 'bg-white border-gray-200 hover:border-rose-300'
+                            } ${editingLimitDay?.day === d ? 'ring-2 ring-rose-500' : ''} ${dayOfWeek === 0 ? 'text-red-500' : dayOfWeek === 6 ? 'text-blue-500' : ''}`}
                           >
-                            <span>{d}</span>
+                            <span className="font-bold">{d}</span>
                             {hasOverride && (
-                              <span className="text-[7px] text-rose-600 leading-tight">
-                                {Object.entries(dailyOverrides[d]).filter(([,v]) => v > 0).map(([k,v]) => `${k}${v}`).join(' ')}
-                              </span>
+                              <div className="flex flex-wrap justify-center gap-x-1 mt-0.5">
+                                {Object.entries(dailyOverrides[d]).filter(([,v]) => v > 0).map(([k, v]) => (
+                                  <span key={k} className="text-[10px] font-bold text-rose-700 leading-tight">{k}{v}</span>
+                                ))}
+                              </div>
                             )}
                           </button>
                         );
