@@ -3252,18 +3252,23 @@ const WardScheduleSystem = () => {
     const dayType: 'weekday' | 'saturday' | 'sunday' | 'holiday' =
       isHolidayDay ? 'holiday' : dow === 0 ? 'sunday' : dow === 6 ? 'saturday' : 'weekday';
 
-    // 層2: 日別オーバーライドチェック（層1より優先）
+    // 層2: 日別オーバーライドチェック（層1-Aを完全に上書き）
     const dayOverride = dailyOverrides[day];
-    if (dayOverride && dayOverride[shiftType] !== undefined && dayOverride[shiftType] > 0) {
-      let count = 0;
-      Object.entries(allReqs).forEach(([nid, reqs]: [string, any]) => {
-        if (Number(nid) !== nurseId && reqs[day] === shiftType) count++;
-      });
-      if (count >= dayOverride[shiftType]) {
-        return { allowed: false, reason: `${day}日の「${shiftType}」は${dayOverride[shiftType]}人までです（現在${count}人）` };
+    const hasDayOverride = dayOverride && Object.values(dayOverride).some(v => v > 0);
+
+    if (hasDayOverride) {
+      // 日別設定がある日はこちらのみ適用（曜日タイプ別は無視）
+      if (dayOverride[shiftType] !== undefined && dayOverride[shiftType] > 0) {
+        let count = 0;
+        Object.entries(allReqs).forEach(([nid, reqs]: [string, any]) => {
+          if (Number(nid) !== nurseId && reqs[day] === shiftType) count++;
+        });
+        if (count >= dayOverride[shiftType]) {
+          return { allowed: false, reason: `${day}日の「${shiftType}」は${dayOverride[shiftType]}人までです（現在${count}人）` };
+        }
       }
     } else {
-      // 層1-A: 1日あたりの希望人数上限チェック（日別オーバーライドがない場合）
+      // 日別設定がない日は曜日タイプ別を適用
       const dailyLimit = requestLimitConfig.dailyLimits[dayType]?.[shiftType];
       if (dailyLimit !== undefined && dailyLimit > 0) {
         let count = 0;
@@ -3271,7 +3276,8 @@ const WardScheduleSystem = () => {
           if (Number(nid) !== nurseId && reqs[day] === shiftType) count++;
         });
         if (count >= dailyLimit) {
-          return { allowed: false, reason: `${dayType === 'weekday' ? '平日' : dayType === 'saturday' ? '土曜' : dayType === 'sunday' ? '日曜' : '祝日'}の「${shiftType}」は1日${dailyLimit}人までです（現在${count}人）` };
+          const dayTypeName = dayType === 'weekday' ? '平日' : dayType === 'saturday' ? '土曜' : dayType === 'sunday' ? '日曜' : '祝日';
+          return { allowed: false, reason: `${dayTypeName}の「${shiftType}」は1日${dailyLimit}人までです（現在${count}人）` };
         }
       }
     }
@@ -3454,21 +3460,19 @@ const WardScheduleSystem = () => {
       }
     });
 
-    // Set limits - daily overrides take priority
+    // Set limits - daily overrides completely replace day-type limits for that day
     const dayOverride = dailyOverrides[day] || {};
-    const defaultLimits = requestLimitConfig.dailyLimits[dayType] || {};
-    const allLimits = { ...defaultLimits, ...dayOverride };
+    const hasDayOverride = Object.values(dayOverride).some(v => v > 0);
+    const activeLimits = hasDayOverride ? dayOverride : (requestLimitConfig.dailyLimits[dayType] || {});
 
     Object.keys(counts).forEach(shift => {
-      if (dayOverride[shift] !== undefined && dayOverride[shift] > 0) {
-        counts[shift].limit = dayOverride[shift];
-      } else if (defaultLimits[shift] !== undefined && defaultLimits[shift] > 0) {
-        counts[shift].limit = defaultLimits[shift];
+      if (activeLimits[shift] !== undefined && activeLimits[shift] > 0) {
+        counts[shift].limit = activeLimits[shift];
       }
     });
 
     // Also show shifts that have limits but 0 count
-    Object.entries(allLimits).forEach(([shift, limit]) => {
+    Object.entries(activeLimits).forEach(([shift, limit]) => {
       if ((limit as number) > 0 && !counts[shift]) {
         counts[shift] = { current: 0, limit: limit as number };
       }
@@ -4725,7 +4729,7 @@ const WardScheduleSystem = () => {
                   </div>
 
                   <div className="bg-gray-50 rounded-xl p-3 text-xs text-gray-500">
-                    <p><strong>優先順位：</strong>日別制限 &gt; 曜日タイプ別制限。日別制限が設定されている日はその値が使われ、それ以外の日は曜日タイプ別の設定が適用されます。</p>
+                    <p><strong>優先順位：</strong>日別制限が設定されている日はその値のみが適用され、曜日タイプ別の人数制限は無視されます。日別制限が設定されていない日は曜日タイプ別の設定が適用されます。個人別の制限（曜日タイプ別日数上限・シフト別月間上限）は常に適用されます。</p>
                     <p className="mt-1">設定は自動保存されます。</p>
                   </div>
                 </div>
@@ -7430,7 +7434,7 @@ const WardScheduleSystem = () => {
                   </div>
 
                   <div className="bg-gray-50 rounded-xl p-3 text-xs text-gray-500">
-                    <p><strong>優先順位：</strong>日別制限 &gt; 曜日タイプ別制限。日別制限が設定されている日はその値が使われ、それ以外の日は曜日タイプ別の設定が適用されます。</p>
+                    <p><strong>優先順位：</strong>日別制限が設定されている日はその値のみが適用され、曜日タイプ別の人数制限は無視されます。日別制限が設定されていない日は曜日タイプ別の設定が適用されます。個人別の制限（曜日タイプ別日数上限・シフト別月間上限）は常に適用されます。</p>
                     <p className="mt-1">設定は自動保存されます。</p>
                   </div>
                 </div>
