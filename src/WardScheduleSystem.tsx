@@ -3183,7 +3183,7 @@ const WardScheduleSystem = () => {
 
       // サイクル: 空→休→有→前→後→日→夜→管夜→[カスタムシフト]→空
       // 「明」「管明」はクリック→休に変更
-      const staffCycle: (string | null)[] = ['休', '有', '前', '後', '日', '夜', '管夜', ...customShifts.map(cs => cs.symbol), null];
+      const staffCycle: (string | null)[] = ['休', '有', '前', '後', '日', '夜', '管夜', null];
       let newValue: string | null;
       if (currentRequest === '明' || currentRequest === '管明') {
         newValue = '休';
@@ -3618,6 +3618,7 @@ const WardScheduleSystem = () => {
           <div className="mt-6 bg-blue-50 border border-blue-200 rounded-xl p-4">
             <p className="text-sm text-blue-800">
               <strong>💡 使い方：</strong>月のカードをクリックすると、その月の勤務表画面に移動します。
+              <br /><span className="text-orange-600">勤務表画面ではルール違反（連続勤務超過・夜勤人数不足等）がリアルタイムでチェックされ、セル右上に▲マークで表示されます。</span>
             </p>
           </div>
         </div>
@@ -4580,6 +4581,8 @@ const WardScheduleSystem = () => {
               <br />
               <span className="text-purple-600">「夜勤」「管理夜勤」を選択すると翌日が自動で「夜明」「管明」、翌々日が「公休」になります。</span>
               <br />
+              <span className="text-gray-500">※カスタムシフト（研修・出張等）は管理者のみが設定できます。</span>
+              <br />
               <span className="text-emerald-600">休:2 有:1</span> などは他の職員の希望数です。
               <br />
               <span className="text-orange-600">「前月」と表示された日は前月勤務に基づく制約のため変更できません。</span>
@@ -5311,7 +5314,7 @@ const WardScheduleSystem = () => {
             {!isMaximized && (
             <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4">
               <p className="text-sm text-blue-800">
-                <strong>💡 手動編集：</strong>セルをクリックすると「日」→「夜」→「管夜」→「休」→「有」→「午前半」→「午後半」→「空」と切り替わります。「夜」選択時は翌日が自動で「明」、翌々日が「休」に、「管夜」選択時は翌日が「管明」、翌々日が「休」になります。「明」「管明」をクリックすると「休」に変わります。
+                <strong>💡 手動編集：</strong>セルをクリックするとシフト選択パレットが表示されます。パレットからシフトを1タップで選択できます。「夜」「管夜」選択時は翌日が自動で「明」「管明」、翌々日が「休」になります。カスタムシフト（研修・出張・各種休暇等）は「シフト種類」で追加できます。
               </p>
             </div>
             )}
@@ -6797,7 +6800,7 @@ const WardScheduleSystem = () => {
                     自動生成時にこの設定が反映されます。
                     未設定の場合は共通設定（最大{generateConfig.maxNightShifts}回）が適用されます。
                     「希望上限」は職員が入力できる希望数の上限です（0=無制限）。明・管明は自動設定のためカウントに含まれません。
-                    生成除外にチェックすると自動生成の対象外になります。手動でシフトを入力してください。
+                    生成除外にチェックすると自動生成の対象外になります（手動でシフトを入力してください）。カスタムシフト（研修・出張等）はダッシュボードの「シフト種類」から追加できます。
                   </p>
                 </div>
 
@@ -7069,6 +7072,9 @@ const WardScheduleSystem = () => {
                         </div>
                       </label>
                     </div>
+                    <p className="text-xs text-gray-500 mt-3">
+                      AI最適化は数理最適化により最適解に近い勤務表を生成します（初回は起動に50秒ほどかかる場合があります）。3パターンから最適なものを選択できます。
+                    </p>
                   </div>
 
                   {/* 週ごとの夜勤人数設定 */}
