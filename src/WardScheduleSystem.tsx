@@ -851,6 +851,7 @@ const WardScheduleSystem = () => {
     };
 
     const isNight = (s: any) => s === '夜' || s === '管夜';
+    const isCountedNight = (s: any) => s === '夜'; // 夜勤回数カウントは「夜」のみ（管夜は除外）
     const isAke = (s: any) => s === '明' || s === '管明';
     const isOffV = (s: any) => s === '休' || s === '有' || (s && allShifts[s]?.category === 'off');
     const isWorkV = (s: any) => s && !isOffV(s) && !isAke(s) && allShifts[s]?.category !== 'half_off';
@@ -907,8 +908,8 @@ const WardScheduleSystem = () => {
         }
       }
 
-      // 6. 夜勤回数上限超過
-      const nightCount = shifts.filter((s: any) => isNight(s)).length;
+      // 6. 夜勤回数上限超過（管夜は除外）
+      const nightCount = shifts.filter((s: any) => isCountedNight(s)).length;
       const mx = pr?.noNightShift ? 0 : (pr?.maxNightShifts ?? cfgV.maxNightShifts);
       if (nightCount > mx) {
         v.push({ nurseId: nurse.id, day: -1, type: 'night_over', message: `夜勤${nightCount}回（上限${mx}回）`, severity: 'warning' });
@@ -935,7 +936,7 @@ const WardScheduleSystem = () => {
       activeNurses.forEach(n => {
         const s = data[n.id]?.[d];
         if (s === '日') dayCount++;
-        if (isNight(s)) nightCountD++;
+        if (isCountedNight(s)) nightCountD++; // nightShiftPattern対象は「夜」のみ
       });
       const dow = new Date(targetYear, targetMonth, d + 1).getDay();
       const isHolidayD = dow === 0 || dow === 6 || holidayListV.includes(d + 1);
@@ -1749,12 +1750,8 @@ const WardScheduleSystem = () => {
       maxDoubleNightPairs: generateConfig.maxDoubleNightPairs,
     };
 
-    // 夜勤カウント用ヘルパー（管理当直除外オプション対応）
-    const isCountableNight = (s: any) => {
-      if (!isNightShift(s)) return false;
-      if (cfg.excludeMgmtFromNightCount && s === '管夜') return false;
-      return true;
-    };
+    // 夜勤カウント用ヘルパー（管夜は夜勤回数に含めない）
+    const isCountableNight = (s: any) => s === '夜';
 
     // 夜勤NGペアチェック
     const hasNightNgConflict = (schedule: any, nurseId: number, day: number) => {
@@ -2961,7 +2958,7 @@ const WardScheduleSystem = () => {
     // 職員データ
     activeNurses.forEach(nurse => {
       const shifts = schedule.data[nurse.id] || [];
-      const nightCount = shifts.filter((s: any) => s === '夜' || s === '管夜').length;
+      const nightCount = shifts.filter((s: any) => s === '夜').length;
       const dayCount = shifts.filter((s: any) => s === '日').length;
       const offCount = shifts.filter((s: any) => s === '休' || s === '有').length
         + shifts.filter((s: any) => s === '午前半' || s === '午後半').length * 0.5;
@@ -2976,7 +2973,7 @@ const WardScheduleSystem = () => {
       let nc = 0, dc = 0;
       activeNurses.forEach(n => {
         const s = (schedule.data[n.id] || [])[i];
-        if (s === '夜' || s === '管夜') nc++;
+        if (s === '夜') nc++;
         if (s === '日') dc++;
       });
       nightRow.push(String(nc));
@@ -3525,8 +3522,6 @@ const WardScheduleSystem = () => {
             </button>
           </div>
 
-
-
           <p className="text-center text-xs text-gray-400 mt-8">
             データはサーバーに安全に保存されます
           </p>
@@ -3892,7 +3887,7 @@ const WardScheduleSystem = () => {
             let dayShifts = 0, nightShifts = 0, daysOff = 0, paidLeave = 0, halfDays = 0, totalWork = 0;
             shifts.forEach((s: any) => {
               if (s === '日') { dayShifts++; totalWork++; }
-              else if (s === '夜' || s === '管夜') { if (!generateConfig.excludeMgmtFromNightCount || s !== '管夜') nightShifts++; totalWork++; }
+              else if (s === '夜' || s === '管夜') { if (s === '夜') nightShifts++; totalWork++; }
               else if (s === '休') daysOff++;
               else if (s === '有') { daysOff++; paidLeave++; }
               else if (s === '午前半' || s === '午後半') { halfDays++; totalWork++; }
@@ -4883,7 +4878,7 @@ const WardScheduleSystem = () => {
 
             // 集計
             const dayShiftCount = myShifts.filter((s: any) => s === '日' || s === '午前半' || s === '午後半').length;
-            const nightCount = myShifts.filter((s: any) => s === '夜' || s === '管夜').length;
+            const nightCount = myShifts.filter((s: any) => s === '夜').length;
             const restCount = myShifts.filter((s: any) => s === '休' || s === '有').length
               + myShifts.filter((s: any) => s === '午前半' || s === '午後半').length * 0.5;
 
@@ -5891,7 +5886,7 @@ const WardScheduleSystem = () => {
                   {activeNurses.map((nurse, nIdx) => {
                     const shifts = scheduleDisplayData[nurse.id] || [];
                     const stats = {
-                      night: shifts.filter(s => s === '夜' || s === '管夜').length,
+                      night: shifts.filter(s => s === '夜').length,
                       day: shifts.filter(s => s === '日').length,
                       off: shifts.filter(s => s === '休' || s === '有' || (s && allShifts[s]?.category === 'off')).length
                         + shifts.filter(s => s === '午前半' || s === '午後半' || (s && allShifts[s]?.category === 'half_off')).length * 0.5,
@@ -5986,7 +5981,7 @@ const WardScheduleSystem = () => {
                       let count = 0;
                       activeNurses.forEach(nurse => {
                         const shift = (scheduleDisplayData[nurse.id] || [])[i];
-                        if (shift === '夜' || shift === '管夜') count++;
+                        if (shift === '夜') count++;
                       });
                       // getNightReq と同じロジックで夜勤必要数を計算
                       const nightRequired = (() => {
@@ -6206,7 +6201,7 @@ const WardScheduleSystem = () => {
                     let total = 0;
                     activeNurses.forEach(nurse => {
                       const shifts = scheduleDisplayData[nurse.id] || [];
-                      total += shifts.filter(s => s === '夜' || s === '管夜').length;
+                      total += shifts.filter(s => s === '夜').length;
                     });
                     return total;
                   })()}
@@ -6231,7 +6226,7 @@ const WardScheduleSystem = () => {
                   {(() => {
                     const nightCounts = activeNurses.map(nurse => {
                       const shifts = scheduleDisplayData[nurse.id] || [];
-                      return shifts.filter(s => s === '夜' || s === '管夜').length;
+                      return shifts.filter(s => s === '夜').length;
                     });
                     return `${Math.min(...nightCounts)}〜${Math.max(...nightCounts)}`;
                   })()}
@@ -6288,7 +6283,7 @@ const WardScheduleSystem = () => {
                     for (let d = w.start - 1; d < w.end; d++) {
                       activeNurses.forEach(nurse => {
                         const shift = (scheduleDisplayData[nurse.id] || [])[d];
-                        if (shift === '夜' || shift === '管夜') totalNightShifts++;
+                        if (shift === '夜') totalNightShifts++;
                       });
                       daysCovered++;
                     }
@@ -6331,7 +6326,7 @@ const WardScheduleSystem = () => {
                     {activeNurses.map(nurse => {
                       const shifts = scheduleDisplayData[nurse.id] || [];
                       const stats = {
-                        night: shifts.filter(s => s === '夜' || s === '管夜').length,
+                        night: shifts.filter(s => s === '夜').length,
                         day: shifts.filter(s => s === '日').length,
                         ake: shifts.filter(s => s === '明' || s === '管明').length,
                         off: shifts.filter(s => s === '休').length,
@@ -6375,7 +6370,7 @@ const WardScheduleSystem = () => {
                         let totals = { night: 0, day: 0, ake: 0, off: 0, paid: 0, work: 0, weekend: 0 };
                         activeNurses.forEach(nurse => {
                           const shifts = scheduleDisplayData[nurse.id] || [];
-                          totals.night += shifts.filter(s => s === '夜' || s === '管夜').length;
+                          totals.night += shifts.filter(s => s === '夜').length;
                           totals.day += shifts.filter(s => s === '日').length;
                           totals.ake += shifts.filter(s => s === '明' || s === '管明').length;
                           totals.off += shifts.filter(s => s === '休').length;
@@ -6409,7 +6404,7 @@ const WardScheduleSystem = () => {
                         let totals = { night: 0, day: 0, ake: 0, off: 0, paid: 0, work: 0, weekend: 0 };
                         activeNurses.forEach(nurse => {
                           const shifts = scheduleDisplayData[nurse.id] || [];
-                          totals.night += shifts.filter(s => s === '夜' || s === '管夜').length;
+                          totals.night += shifts.filter(s => s === '夜').length;
                           totals.day += shifts.filter(s => s === '日').length;
                           totals.ake += shifts.filter(s => s === '明' || s === '管明').length;
                           totals.off += shifts.filter(s => s === '休').length;
