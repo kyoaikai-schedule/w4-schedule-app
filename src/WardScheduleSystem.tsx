@@ -6018,7 +6018,7 @@ const WardScheduleSystem = () => {
                       let count = 0;
                       activeNurses.forEach(nurse => {
                         const shift = (scheduleDisplayData[nurse.id] || [])[i];
-                        if (shift === '明' || shift === '管明') count++;
+                        if (shift === '明') count++;
                       });
                       return (
                         <td key={i} className={`border text-center text-pink-700 ${isMaximized ? 'p-0 text-[10px]' : 'p-1'}`}>
@@ -6328,7 +6328,7 @@ const WardScheduleSystem = () => {
                       const stats = {
                         night: shifts.filter(s => s === '夜').length,
                         day: shifts.filter(s => s === '日').length,
-                        ake: shifts.filter(s => s === '明' || s === '管明').length,
+                        ake: shifts.filter(s => s === '明').length,
                         off: shifts.filter(s => s === '休').length,
                         paid: shifts.filter(s => s === '有').length,
                         work: shifts.filter(s => s && s !== '休' && s !== '有' && s !== '明' && s !== '管明').length,
@@ -6372,7 +6372,7 @@ const WardScheduleSystem = () => {
                           const shifts = scheduleDisplayData[nurse.id] || [];
                           totals.night += shifts.filter(s => s === '夜').length;
                           totals.day += shifts.filter(s => s === '日').length;
-                          totals.ake += shifts.filter(s => s === '明' || s === '管明').length;
+                          totals.ake += shifts.filter(s => s === '明').length;
                           totals.off += shifts.filter(s => s === '休').length;
                           totals.paid += shifts.filter(s => s === '有').length;
                           totals.work += shifts.filter(s => s && s !== '休' && s !== '有' && s !== '明' && s !== '管明').length;
@@ -6406,7 +6406,7 @@ const WardScheduleSystem = () => {
                           const shifts = scheduleDisplayData[nurse.id] || [];
                           totals.night += shifts.filter(s => s === '夜').length;
                           totals.day += shifts.filter(s => s === '日').length;
-                          totals.ake += shifts.filter(s => s === '明' || s === '管明').length;
+                          totals.ake += shifts.filter(s => s === '明').length;
                           totals.off += shifts.filter(s => s === '休').length;
                           totals.paid += shifts.filter(s => s === '有').length;
                           totals.work += shifts.filter(s => s && s !== '休' && s !== '有' && s !== '明' && s !== '管明').length;
