@@ -1594,11 +1594,11 @@ const WardScheduleSystem = () => {
 
       try {
         const reqBody = buildSolverRequest();
-        setGeneratingPhase('AI最適化を実行中（約30秒）...');
+        setGeneratingPhase('AI最適化を実行中...');
         await tick();
 
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 120000);
+        const timeout = setTimeout(() => controller.abort(), 300000);
 
         const response = await fetch(`${solverAPIUrl}/solve`, {
           method: 'POST',
