@@ -1639,7 +1639,12 @@ const WardScheduleSystem = () => {
             data,
             score: p.score || 0,
             metrics: p.metrics || {},
-            report: [`✅ OR-Tools CP-SATソルバーで生成`],
+            report: [
+              `✅ OR-Tools CP-SATソルバーで生成`,
+              p.metrics?.relaxLevel > 0
+                ? `⚠️ 一部制約を緩和して生成（レベル${p.metrics.relaxLevel}）`
+                : `✅ 全制約を完全遵守`,
+            ],
           };
         });
 
@@ -1652,7 +1657,7 @@ const WardScheduleSystem = () => {
       } catch (error: any) {
         console.error('Solver API error:', error);
         const fallback = confirm(
-          `⚠️ AI最適化サーバーへの接続に失敗しました。\n\n${error.message}\n\nローカル生成に切り替えますか？`
+          `⚠️ AI最適化サーバーへの接続に失敗しました。\n\n原因: ${error.message}\n\nローカル生成は品質が劣る場合があります。\nAI最適化を再試行するには「キャンセル」を押してから\nもう一度「自動生成」を押してください。\n\nローカル生成に切り替えますか？`
         );
         if (!fallback) {
           setGenerating(false);
@@ -2681,6 +2686,8 @@ const WardScheduleSystem = () => {
 
     const report: string[] = [];
     let hasViolation = false;
+
+    report.push(`📊 ブラウザ内ローカル生成（AI最適化なし）`);
 
     if (excludedNurses.length > 0) {
       report.push(`⏭️ 生成除外: ${excludedNurses.map(n => n.name).join(', ')}（手動入力が必要です）`);
