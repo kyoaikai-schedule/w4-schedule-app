@@ -574,6 +574,16 @@ const WardScheduleSystem = () => {
         if (savedGenConfig) {
           try {
             const parsed = JSON.parse(savedGenConfig);
+            // DB の異常値からの自衛: 日勤者数が 1 以下なら破棄してデフォルト値を維持
+            // (1ユーザーが過去に誤って "1人" を保存してしまった場合の救済)
+            if (typeof parsed.weekdayDayStaff === 'number' && parsed.weekdayDayStaff <= 1) {
+              console.warn('[load generateConfig] saved weekdayDayStaff <= 1 — discarding:', parsed.weekdayDayStaff);
+              delete parsed.weekdayDayStaff;
+            }
+            if (typeof parsed.weekendDayStaff === 'number' && parsed.weekendDayStaff <= 1) {
+              console.warn('[load generateConfig] saved weekendDayStaff <= 1 — discarding:', parsed.weekendDayStaff);
+              delete parsed.weekendDayStaff;
+            }
             setGenerateConfig(prev => ({ ...prev, ...parsed }));
           } catch(e) { console.error('generateConfig解析エラー:', e); }
         }
@@ -1594,6 +1604,19 @@ const WardScheduleSystem = () => {
 
       try {
         const reqBody = buildSolverRequest();
+
+        // DEBUG: ソルバーへの送信値を可視化（DB保存値とstate値が乖離する不具合の調査用）
+        console.log('[solver request] generateConfig snapshot', generateConfig);
+        console.log('[solver request] body.config', reqBody.config);
+        console.log('[solver request] body.weekends sample', reqBody.weekends);
+        // 数値が異常に低ければ警告（先頭ナースの設定をサンプリング）
+        if (reqBody.config.weekdayDayStaff <= 1 || reqBody.config.weekendDayStaff <= 1) {
+          console.warn(
+            '[solver request] WARNING 日勤必要人数が異常に低い:',
+            { weekdayDayStaff: reqBody.config.weekdayDayStaff, weekendDayStaff: reqBody.config.weekendDayStaff }
+          );
+        }
+
         setGeneratingPhase('AI最適化を実行中...');
         await tick();
 
