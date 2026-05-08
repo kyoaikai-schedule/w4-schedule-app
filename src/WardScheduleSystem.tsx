@@ -3990,10 +3990,10 @@ const WardScheduleSystem = () => {
                             <tr className="bg-gray-100 font-bold">
                               <td className="border p-2">平均 / 合計</td>
                               <td className="border p-2 text-center text-xs text-gray-500">{cnt}名</td>
-                              <td className="border p-2 text-center">{(sumDay / cnt).toFixed(1)}</td>
-                              <td className="border p-2 text-center">{(sumNight / cnt).toFixed(1)}</td>
-                              <td className="border p-2 text-center">{(sumWork / cnt).toFixed(1)}</td>
-                              <td className="border p-2 text-center">{(sumRest / cnt).toFixed(1)}</td>
+                              <td className="border p-2 text-center">{cnt > 0 ? (sumDay / cnt).toFixed(1) : '-'}</td>
+                              <td className="border p-2 text-center">{cnt > 0 ? (sumNight / cnt).toFixed(1) : '-'}</td>
+                              <td className="border p-2 text-center">{cnt > 0 ? (sumWork / cnt).toFixed(1) : '-'}</td>
+                              <td className="border p-2 text-center">{cnt > 0 ? (sumRest / cnt).toFixed(1) : '-'}</td>
                               <td className="border p-2 text-center">{sumPaid}</td>
                               <td className="border p-2 text-center">{sumHalf}</td>
                             </tr>
@@ -6426,13 +6426,13 @@ const WardScheduleSystem = () => {
                         });
                         return (
                           <>
-                            <td className="border p-2 text-center text-purple-600">{(totals.night / n).toFixed(1)}</td>
-                            <td className="border p-2 text-center text-blue-600">{(totals.day / n).toFixed(1)}</td>
-                            <td className="border p-2 text-center text-pink-600">{(totals.ake / n).toFixed(1)}</td>
-                            <td className="border p-2 text-center text-gray-600">{(totals.off / n).toFixed(1)}</td>
-                            <td className="border p-2 text-center text-emerald-600">{(totals.paid / n).toFixed(1)}</td>
-                            <td className="border p-2 text-center text-amber-600">{(totals.work / n).toFixed(1)}</td>
-                            <td className="border p-2 text-center text-orange-600">{(totals.weekend / n).toFixed(1)}</td>
+                            <td className="border p-2 text-center text-purple-600">{n > 0 ? (totals.night / n).toFixed(1) : '-'}</td>
+                            <td className="border p-2 text-center text-blue-600">{n > 0 ? (totals.day / n).toFixed(1) : '-'}</td>
+                            <td className="border p-2 text-center text-pink-600">{n > 0 ? (totals.ake / n).toFixed(1) : '-'}</td>
+                            <td className="border p-2 text-center text-gray-600">{n > 0 ? (totals.off / n).toFixed(1) : '-'}</td>
+                            <td className="border p-2 text-center text-emerald-600">{n > 0 ? (totals.paid / n).toFixed(1) : '-'}</td>
+                            <td className="border p-2 text-center text-amber-600">{n > 0 ? (totals.work / n).toFixed(1) : '-'}</td>
+                            <td className="border p-2 text-center text-orange-600">{n > 0 ? (totals.weekend / n).toFixed(1) : '-'}</td>
                           </>
                         );
                       })()}
@@ -7666,27 +7666,46 @@ const WardScheduleSystem = () => {
                   <p className="text-sm text-gray-600 mb-4">3つのパターンを比較して、最適なものを選択してください。</p>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {generatedPatterns.map((pat, idx) => {
-                      const m = pat.metrics;
-                      const isBest = idx === 0;
-                      const nightStars = m.nightBalance < 0.5 ? '★★★' : m.nightBalance < 1.0 ? '★★' : '★';
-                      const dayStars = m.dayShortage === 0 ? '★★★' : m.dayShortage <= 3 ? '★★' : '★';
-                      const nightFillStars = m.nightShortage === 0 ? '★★★' : m.nightShortage <= 2 ? '★★' : '★';
+                      const m = pat.metrics || {};
+                      const hasError = !pat.data || Object.keys(pat.data).length === 0 || m.error;
+                      const isBest = idx === 0 && !hasError;
+                      const nb = typeof m.nightBalance === 'number' ? m.nightBalance : null;
+                      const ds = typeof m.dayShortage === 'number' ? m.dayShortage : null;
+                      const ns = typeof m.nightShortage === 'number' ? m.nightShortage : null;
+                      const nightStars = nb === null ? '-' : nb < 0.5 ? '★★★' : nb < 1.0 ? '★★' : '★';
+                      const dayStars = ds === null ? '-' : ds === 0 ? '★★★' : ds <= 3 ? '★★' : '★';
+                      const nightFillStars = ns === null ? '-' : ns === 0 ? '★★★' : ns <= 2 ? '★★' : '★';
+                      const score = typeof pat.score === 'number' ? pat.score : (typeof m.totalScore === 'number' ? m.totalScore : 0);
                       return (
-                        <div key={idx} className={`border-2 rounded-xl p-4 ${isBest ? 'border-green-400 bg-green-50/30' : 'border-gray-200'}`}>
+                        <div key={idx} className={`border-2 rounded-xl p-4 ${hasError ? 'border-red-300 bg-red-50/40' : isBest ? 'border-green-400 bg-green-50/30' : 'border-gray-200'}`}>
                           <div className="flex items-center justify-between mb-3">
                             <h4 className="font-bold text-lg">{pat.label}</h4>
-                            {isBest && <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-bold">おすすめ</span>}
+                            {hasError && <span className="px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-xs font-bold">解なし</span>}
+                            {!hasError && isBest && <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-bold">おすすめ</span>}
                           </div>
-                          <div className="space-y-2 text-sm">
-                            <div className="flex justify-between"><span className="text-gray-600">総合スコア</span><span className="font-bold">{Math.round(m.totalScore).toLocaleString()}</span></div>
-                            <div className="flex justify-between"><span className="text-gray-600">夜勤均等度</span><span className="font-bold text-yellow-600">{nightStars} <span className="text-xs text-gray-400">({m.nightBalance.toFixed(2)})</span></span></div>
-                            <div className="flex justify-between"><span className="text-gray-600">日勤充足</span><span className="font-bold text-yellow-600">{dayStars} <span className="text-xs text-gray-400">(不足{m.dayShortage})</span></span></div>
-                            <div className="flex justify-between"><span className="text-gray-600">夜勤充足</span><span className="font-bold text-yellow-600">{nightFillStars} <span className="text-xs text-gray-400">(不足{m.nightShortage})</span></span></div>
-                            <div className="flex justify-between"><span className="text-gray-600">希望一致率</span><span className="font-bold">{m.requestMatch}%</span></div>
-                            <div className="flex justify-between"><span className="text-gray-600">連続勤務違反</span><span className={`font-bold ${m.consecViolations === 0 ? 'text-green-600' : 'text-red-600'}`}>{m.consecViolations === 0 ? '✅ 0' : `⚠️ ${m.consecViolations}`}</span></div>
-                            <div className="flex justify-between"><span className="text-gray-600">平均休日数</span><span className="font-bold">{m.avgDaysOff}日</span></div>
-                          </div>
+                          {hasError ? (
+                            <div className="text-sm text-red-700 space-y-1">
+                              <p className="font-bold">⚠️ このパターンは生成できませんでした</p>
+                              {m.error && <p className="text-xs">{m.error}</p>}
+                              {Array.isArray(m.validationErrors) && m.validationErrors.length > 0 && (
+                                <ul className="text-xs list-disc list-inside text-red-600">
+                                  {m.validationErrors.slice(0, 3).map((e: string, i: number) => <li key={i}>{e}</li>)}
+                                </ul>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="space-y-2 text-sm">
+                              <div className="flex justify-between"><span className="text-gray-600">総合スコア</span><span className="font-bold">{Math.round(score).toLocaleString()}</span></div>
+                              <div className="flex justify-between"><span className="text-gray-600">夜勤均等度</span><span className="font-bold text-yellow-600">{nightStars} <span className="text-xs text-gray-400">({nb === null ? '-' : nb.toFixed(2)})</span></span></div>
+                              <div className="flex justify-between"><span className="text-gray-600">日勤充足</span><span className="font-bold text-yellow-600">{dayStars} <span className="text-xs text-gray-400">(不足{ds ?? '-'})</span></span></div>
+                              <div className="flex justify-between"><span className="text-gray-600">夜勤充足</span><span className="font-bold text-yellow-600">{nightFillStars} <span className="text-xs text-gray-400">(不足{ns ?? '-'})</span></span></div>
+                              <div className="flex justify-between"><span className="text-gray-600">希望一致率</span><span className="font-bold">{m.requestMatch ?? '-'}%</span></div>
+                              <div className="flex justify-between"><span className="text-gray-600">連続勤務違反</span><span className={`font-bold ${m.consecViolations === 0 ? 'text-green-600' : 'text-red-600'}`}>{m.consecViolations === 0 ? '✅ 0' : `⚠️ ${m.consecViolations ?? '-'}`}</span></div>
+                              <div className="flex justify-between"><span className="text-gray-600">平均休日数</span><span className="font-bold">{m.avgDaysOff ?? '-'}日</span></div>
+                            </div>
+                          )}
                           <button
+                            disabled={hasError}
                             onClick={() => {
                               const monthKey = `${targetYear}-${targetMonth}`;
                               setSchedule({ month: monthKey, data: pat.data });
@@ -7697,17 +7716,18 @@ const WardScheduleSystem = () => {
                               insertAuditLog({ action: 'schedule_generate', user_type: 'admin', year: targetYear, month: targetMonth, details: `${pat.label}を採用` });
                               setShowPatternSelect(false);
                               setGeneratedPatterns([]);
-                              const alertLines = pat.report.filter((r: string) => r.startsWith('⚠️'));
-                              const statLines = pat.report.filter((r: string) => r.startsWith('📊') || r.startsWith('✅') || r.startsWith('⏭️'));
+                              const report: string[] = Array.isArray(pat.report) ? pat.report : [];
+                              const alertLines = report.filter((r: string) => r.startsWith('⚠️'));
+                              const statLines = report.filter((r: string) => r.startsWith('📊') || r.startsWith('✅') || r.startsWith('⏭️'));
                               if (alertLines.length > 0) {
                                 alert('⚠️ 一部制約違反があります:\n\n' + alertLines.join('\n') + '\n\n' + statLines.join('\n'));
                               } else {
                                 alert('✅ 全制約クリア！\n\n' + statLines.join('\n'));
                               }
                             }}
-                            className={`w-full mt-4 px-4 py-2.5 rounded-lg font-bold text-sm transition-colors ${isBest ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'}`}
+                            className={`w-full mt-4 px-4 py-2.5 rounded-lg font-bold text-sm transition-colors ${hasError ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : isBest ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'}`}
                           >
-                            このパターンを採用
+                            {hasError ? '採用できません' : 'このパターンを採用'}
                           </button>
                         </div>
                       );
