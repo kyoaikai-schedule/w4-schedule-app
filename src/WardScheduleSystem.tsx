@@ -1565,6 +1565,25 @@ const WardScheduleSystem = () => {
       if (Object.keys(nr).length > 0) requestData[String(n.id)] = nr as Record<string, string>;
     });
 
+    // 年度切り替え対策: 現在のスタッフリストに存在しない ID の prevMonthConstraints は除外
+    // (前月在籍で当月不在のスタッフが残っているとソルバーが警告するため)
+    const activeNurseIdSet = new Set(generationNurses.map(n => String(n.id)));
+    const cleansedPrevMonth: Record<string, any> = {};
+    const droppedPrevIds: string[] = [];
+    Object.entries(prevMonthConstraints || {}).forEach(([nid, val]) => {
+      if (activeNurseIdSet.has(String(nid))) {
+        cleansedPrevMonth[nid] = val;
+      } else {
+        droppedPrevIds.push(String(nid));
+      }
+    });
+    if (droppedPrevIds.length > 0) {
+      console.warn(
+        '[buildSolverRequest] prevMonthConstraints から在籍外スタッフを除外:',
+        droppedPrevIds
+      );
+    }
+
     return {
       nurses: nurseData,
       daysInMonth,
@@ -1582,7 +1601,7 @@ const WardScheduleSystem = () => {
       },
       requests: requestData,
       nightNgPairs: nightNgPairs.map(([a, b]) => [a, b]),
-      prevMonthConstraints: prevMonthConstraints,
+      prevMonthConstraints: cleansedPrevMonth,
       holidays: holidays.map(h => h - 1),
       weekends,
       numPatterns: 3,
