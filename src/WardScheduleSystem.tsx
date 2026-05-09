@@ -3,6 +3,7 @@ import { Calendar, CalendarDays, Settings, Moon, Sun, Clock, RefreshCw, AlertCir
 import * as XLSX from 'xlsx-js-style';
 import { supabase } from './lib/supabase';
 import { validateRequests, buildConflictMap, RequestConflict } from './utils/validateRequests';
+import TeamScheduleTab from './components/TeamScheduleTab';
 
 // ============================================
 // 定数定義
@@ -325,6 +326,9 @@ const WardScheduleSystem = () => {
 
   // 希望シフトのリアルタイム検証 (2連夜勤等を入力時点で検出)
   const [showConflictDetail, setShowConflictDetail] = useState(false);
+
+  // 夜勤チーム編成タブ (フェーズ3)
+  const [showTeamSchedule, setShowTeamSchedule] = useState(false);
   
   // 勤務表データ
   const [schedule, setSchedule] = useState<any>(null);
@@ -3717,6 +3721,9 @@ const WardScheduleSystem = () => {
                 </button>
                 <button onClick={() => { setShowPasswordChange(true); setNewPasswordInput(''); setNewPasswordConfirm(''); setPasswordChangeError(''); }} className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg text-sm flex items-center gap-1">
                   <Lock size={16} /> パスワード変更
+                </button>
+                <button onClick={() => setShowTeamSchedule(true)} className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-sm flex items-center gap-1">
+                  <Users size={16} /> 夜勤チーム編成
                 </button>
                 <button onClick={handleAdminLogout} className="px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm flex items-center gap-1">
                   <LogOut size={16} /> ログアウト
@@ -8562,6 +8569,32 @@ const WardScheduleSystem = () => {
             </div>
           </div>
         )}
+
+        {/* 夜勤チーム編成タブ (フェーズ3) — 既存ロジックには干渉しない独立モーダル */}
+        <TeamScheduleTab
+          show={showTeamSchedule}
+          onClose={() => setShowTeamSchedule(false)}
+          buildRequest={buildSolverRequest}
+          solverAPIUrl={solverAPIUrl}
+          solverAPIKey={solverAPIKey}
+          activeNurses={activeNurses.map(n => ({ id: n.id, name: n.name, team: n.team }))}
+          onAcceptPattern={(data) => {
+            const monthKey = `${targetYear}-${targetMonth}`;
+            setSchedule({ month: monthKey, data });
+            saveWithStatus(async () => {
+              await saveSchedulesToDB(targetYear, targetMonth, data);
+              saveScheduleToLocalStorage(data);
+            });
+            insertAuditLog({
+              action: 'schedule_generate',
+              user_type: 'admin',
+              year: targetYear,
+              month: targetMonth,
+              details: '夜勤チーム編成タブから採用',
+            });
+            setShowTeamSchedule(false);
+          }}
+        />
       </div>
     </div>
   );
