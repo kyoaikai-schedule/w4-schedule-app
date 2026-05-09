@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Calendar, CalendarDays, Settings, Moon, Sun, Clock, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, LogOut, Lock, Download, Upload, Edit2, Save, X, Eye, Users, FileSpreadsheet, Activity, Maximize2, Minimize2, ChevronUp, ChevronDown, RotateCcw, History, BarChart3, UserX, List, Shield } from 'lucide-react';
 import * as XLSX from 'xlsx-js-style';
 import { supabase } from './lib/supabase';
+import { validateRequests, buildConflictMap, RequestConflict } from './utils/validateRequests';
 
 // ============================================
 // 定数定義
@@ -321,6 +322,9 @@ const WardScheduleSystem = () => {
   
   // 休み希望データ（Supabase永続化）
   const [requests, setRequests] = useState<Record<string, any>>({});
+
+  // 希望シフトのリアルタイム検証 (2連夜勤等を入力時点で検出)
+  const [showConflictDetail, setShowConflictDetail] = useState(false);
   
   // 勤務表データ
   const [schedule, setSchedule] = useState<any>(null);
@@ -826,13 +830,29 @@ const WardScheduleSystem = () => {
     ), [nurses]);
   
   const daysInMonth = getDaysInMonth(targetYear, targetMonth);
-  
+
   // 各看護師にアクセスコードを付与
-  const nursesWithCodes = useMemo(() => 
+  const nursesWithCodes = useMemo(() =>
     activeNurses.map(n => ({
       ...n,
       accessCode: generateFixedAccessCode(n.id, n.name)
     })), [activeNurses]);
+
+  // 希望シフトのリアルタイム検証 (2連夜勤・chainズレ・明→夜)
+  const requestConflicts: RequestConflict[] = useMemo(() => {
+    const monthKey = `${targetYear}-${targetMonth}`;
+    const monthRequests = requests[monthKey] || {};
+    return validateRequests(
+      activeNurses.map(n => ({ id: n.id, name: n.name })),
+      monthRequests,
+      daysInMonth
+    );
+  }, [activeNurses, requests, targetYear, targetMonth, daysInMonth]);
+
+  const conflictCellMap = useMemo(
+    () => buildConflictMap(requestConflicts),
+    [requestConflicts]
+  );
 
   // ============================================
   // ルール違反リアルタイムチェック
@@ -5071,6 +5091,34 @@ const WardScheduleSystem = () => {
             </p>
           </div>
 
+          {/* 希望シフト矛盾の警告バー (このスタッフのみの分) */}
+          {(() => {
+            const myConflicts = requestConflicts.filter(c => String(c.nurseId) === myIdKey);
+            if (myConflicts.length === 0) return null;
+            return (
+              <div className="bg-yellow-50 border-l-4 border-yellow-400 rounded-xl p-3 mb-2 shadow-sm">
+                <div className="flex justify-between items-center gap-2">
+                  <span className="text-yellow-800 text-sm">
+                    ⚠️ 入力中の希望に <strong>{myConflicts.length}</strong> 件の矛盾があります
+                  </span>
+                  <button
+                    onClick={() => setShowConflictDetail(!showConflictDetail)}
+                    className="text-xs px-2 py-1 bg-yellow-100 hover:bg-yellow-200 rounded text-yellow-900 whitespace-nowrap"
+                  >
+                    {showConflictDetail ? '▲ 詳細を閉じる' : '▼ 詳細を表示'}
+                  </button>
+                </div>
+                {showConflictDetail && (
+                  <ul className="mt-2 text-xs text-yellow-900 space-y-1">
+                    {myConflicts.map((c, i) => (
+                      <li key={i}>• {c.message}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            );
+          })()}
+
           {/* カレンダー */}
           <div className="bg-white/90 backdrop-blur-sm rounded-2xl shadow-lg p-4 md:p-6 border border-white/50">
             <div className="grid grid-cols-7 gap-1 md:gap-2 mb-2">
@@ -5101,7 +5149,15 @@ const WardScheduleSystem = () => {
                 const isHoliday = dayOfWeek === 0 || dayOfWeek === 6;
                 const prevCon = (prevMonthConstraints as any)[staffNurseId]?.[day];
                 const isLocked = !!prevCon; // 前月制約がある日はロック
-                
+                const myConflictDays = conflictCellMap.get(myIdKey);
+                const isConflict = myConflictDays?.has(day) ?? false;
+                const conflictTip = isConflict
+                  ? requestConflicts
+                      .filter(c => String(c.nurseId) === myIdKey && c.days.includes(day))
+                      .map(c => c.message)
+                      .join('\n')
+                  : undefined;
+
                 return (
                   <div key={day} className="relative">
                     <button
@@ -5109,7 +5165,8 @@ const WardScheduleSystem = () => {
                         if (isLocked) return; // 前月制約日はタップ不可
                         handleStaffRequestClick(day, request);
                       }}
-                      className={`w-full aspect-square rounded-xl border-2 transition-all flex flex-col items-center justify-center ${
+                      title={conflictTip}
+                      className={`w-full aspect-square rounded-xl border-2 transition-all flex flex-col items-center justify-center ${isConflict ? 'ring-2 ring-red-500 ring-offset-1' : ''} ${
                         isLocked
                           ? prevCon === '明' ? 'bg-pink-100 border-pink-300 cursor-not-allowed opacity-80'
                           : prevCon === '管明' ? 'bg-cyan-100 border-cyan-300 cursor-not-allowed opacity-80'
@@ -6767,6 +6824,31 @@ const WardScheduleSystem = () => {
                 </p>
               </div>
 
+              {/* 希望シフト矛盾の警告バー (全ナース分) */}
+              {requestConflicts.length > 0 && (
+                <div className="bg-yellow-50 border-l-4 border-yellow-400 rounded-xl p-3 mb-4 shadow-sm">
+                  <div className="flex justify-between items-center gap-2">
+                    <span className="text-yellow-800 text-sm">
+                      ⚠️ 希望シフトに <strong>{requestConflicts.length}</strong> 件の矛盾があります
+                      <span className="text-xs text-yellow-700 ml-2">(該当セルは赤枠で表示)</span>
+                    </span>
+                    <button
+                      onClick={() => setShowConflictDetail(!showConflictDetail)}
+                      className="text-xs px-2 py-1 bg-yellow-100 hover:bg-yellow-200 rounded text-yellow-900 whitespace-nowrap"
+                    >
+                      {showConflictDetail ? '▲ 詳細を閉じる' : '▼ 詳細を表示'}
+                    </button>
+                  </div>
+                  {showConflictDetail && (
+                    <ul className="mt-2 text-xs text-yellow-900 space-y-1 max-h-40 overflow-y-auto">
+                      {requestConflicts.map((c, i) => (
+                        <li key={i}>• <strong>{c.nurseName}</strong>: {c.message}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+
               <div className="overflow-auto max-h-[60vh]">
                 <table className="w-full border-collapse text-sm">
                   <thead className="sticky top-0 z-10">
@@ -6803,8 +6885,19 @@ const WardScheduleSystem = () => {
                             const day = i + 1;
                             const req = nurseReqs[day];
                             const con = constraints[day];
+                            const conflictDays = conflictCellMap.get(String(nurse.id));
+                            const isConflict = conflictDays?.has(day) ?? false;
+                            const conflictTip = isConflict
+                              ? requestConflicts
+                                  .filter(c => String(c.nurseId) === String(nurse.id) && c.days.includes(day))
+                                  .map(c => c.message)
+                                  .join('\n')
+                              : undefined;
                             return (
-                              <td key={day} className={`border p-1 text-center ${
+                              <td
+                                key={day}
+                                title={conflictTip}
+                                className={`border p-1 text-center ${isConflict ? 'ring-2 ring-red-500 ring-inset' : ''} ${
                                 req === '休' ? 'bg-gray-200' :
                                 req === '有' ? 'bg-emerald-100' :
                                 req === '前' ? 'bg-orange-100' :
