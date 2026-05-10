@@ -25,6 +25,21 @@ interface PerDayBalance {
   extra: string[];
 }
 
+interface ImprovementSuggestion {
+  priority: number;
+  team: string;
+  type: 'increase_max_night_shifts' | 'enable_night_shift' | 'transfer_nurse' | string;
+  title: string;
+  description: string;
+  targetNurses?: string[];
+  currentCapacity?: number;
+  expectedCapacity?: number;
+  expectedDemand?: number;
+  feasibility: 'easy' | 'medium' | 'hard' | string;
+  fromTeam?: string;
+  toTeam?: string;
+}
+
 interface TeamMetrics {
   teamMode?: boolean;
   teamCount?: number;
@@ -43,6 +58,13 @@ interface TeamMetrics {
     perTeamCount?: Record<string, number>;
     warnings?: string[];
   };
+  feasibility?: {
+    isFullyFeasible?: boolean;
+    currentMaxRate?: number;
+    diagnosis?: string;
+    perTeamInfo?: Record<string, { count: number; capacity: number; demand: number }>;
+  };
+  improvementSuggestions?: ImprovementSuggestion[];
 }
 
 interface TeamPattern {
@@ -96,6 +118,64 @@ const fallbackLabel = (level: number | undefined): string => {
     default: return '不明';
   }
 };
+
+const feasibilityLabel = (f: string | undefined): string => {
+  if (f === 'easy') return '簡単';
+  if (f === 'medium') return '普通';
+  if (f === 'hard') return '要相談';
+  return f ?? '不明';
+};
+
+/** 100% 達成不可能時の改善提案を表示するパネル */
+function ImprovementSuggestionsPanel({ teamMetrics }: { teamMetrics?: TeamMetrics | null }) {
+  const sugs = teamMetrics?.improvementSuggestions ?? [];
+  const feasibility = teamMetrics?.feasibility;
+  if (!sugs || sugs.length === 0) return null;
+  const currentMaxRate = feasibility?.currentMaxRate;
+  const currentMaxPct = typeof currentMaxRate === 'number' ? (currentMaxRate * 100).toFixed(0) : null;
+  return (
+    <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mt-3 mb-4">
+      <h4 className="font-bold text-blue-900 mb-2 flex items-center gap-2">
+        💡 100% 達成のための改善提案
+      </h4>
+      <p className="text-sm text-blue-800 mb-3">
+        {currentMaxPct != null
+          ? <>現在の数学的上限: <strong>{currentMaxPct}%</strong>。以下のいずれかの設定変更で改善できます:</>
+          : <>以下のいずれかの設定変更で改善できる可能性があります:</>}
+      </p>
+      <ol className="space-y-3">
+        {sugs.map((s, i) => (
+          <li key={i} className="flex gap-2">
+            <span className="font-bold text-blue-700 shrink-0">{String.fromCharCode(65 + i)}.</span>
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold text-gray-900">{s.title}</p>
+              <p className="text-sm text-gray-700 break-words">{s.description}</p>
+              {s.targetNurses && s.targetNurses.length > 0 && (
+                <p className="text-xs text-gray-600 mt-1">
+                  対象: {s.targetNurses.join('、')}
+                </p>
+              )}
+              {typeof s.expectedCapacity === 'number' && typeof s.currentCapacity === 'number' && (
+                <p className="text-xs text-gray-600 mt-0.5">
+                  容量: {s.currentCapacity} → <strong>{s.expectedCapacity}</strong>
+                  {typeof s.expectedDemand === 'number' && (
+                    <span className="text-gray-500"> (必要 {s.expectedDemand}、{s.expectedCapacity >= s.expectedDemand ? '✅ 達成' : '⚠️ 不足'})</span>
+                  )}
+                </p>
+              )}
+              <p className="text-xs text-blue-600 mt-1">
+                実施容易さ: {feasibilityLabel(s.feasibility)}
+              </p>
+            </div>
+          </li>
+        ))}
+      </ol>
+      <p className="text-xs text-gray-500 mt-3">
+        ※ 設定変更後、ナース管理画面で対応するナースを編集してから再生成してください。
+      </p>
+    </div>
+  );
+}
 
 export default function TeamScheduleTab({
   show,
@@ -514,7 +594,9 @@ export default function TeamScheduleTab({
                           </div>
                         </div>
                         {isExpanded && (
-                          <div className="mt-3 overflow-auto max-h-72 border rounded">
+                          <>
+                            <ImprovementSuggestionsPanel teamMetrics={draft.team_metrics} />
+                            <div className="mt-3 overflow-auto max-h-72 border rounded">
                             <table className="text-xs border-collapse">
                               <thead className="bg-gray-100 sticky top-0 z-20">
                                 <tr>
@@ -556,6 +638,7 @@ export default function TeamScheduleTab({
                               </tbody>
                             </table>
                           </div>
+                          </>
                         )}
                       </div>
                     );
@@ -609,6 +692,12 @@ export default function TeamScheduleTab({
               </span>
             )}
           </div>
+
+          {/* 改善提案 (3パターン共通の問題なので結果上部に1回表示) */}
+          {teamPatterns.length > 0 && (() => {
+            const tm0 = teamPatterns[0]?.metrics?.teamMetrics;
+            return <ImprovementSuggestionsPanel teamMetrics={tm0} />;
+          })()}
 
           {/* 結果表示 */}
           {teamPatterns.length > 0 && (
