@@ -693,6 +693,21 @@ export default function TeamScheduleTab({
             )}
           </div>
 
+          {/* 生成中の長時間処理通知 */}
+          {loading && (
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-4 shadow-sm">
+              <div className="flex items-center gap-2 text-blue-900 font-bold">
+                <RefreshCw size={18} className="animate-spin" />
+                {generatingPhase || 'チーム編成で勤務表を生成中...'}
+              </div>
+              <p className="text-sm text-blue-700 mt-2">
+                100%バランスを目指して最適化中。最大 <strong>2〜3分</strong> かかる場合があります。
+                ブラウザを閉じずにお待ちください。
+              </p>
+              <progress className="w-full mt-2 h-2" />
+            </div>
+          )}
+
           {/* 改善提案 (3パターン共通の問題なので結果上部に1回表示) */}
           {teamPatterns.length > 0 && (() => {
             const tm0 = teamPatterns[0]?.metrics?.teamMetrics;
