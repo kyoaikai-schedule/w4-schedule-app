@@ -7,7 +7,7 @@
  * 既存の自動生成タブ・既存ロジックには一切干渉しない (本コンポーネント単体で完結)。
  */
 import { useEffect, useMemo, useState } from 'react';
-import { Users, Sparkles, X, RefreshCw, Save, FolderOpen, Trash2, Star, Eye } from 'lucide-react';
+import { Users, Sparkles, X, RefreshCw, Save, FolderOpen, Trash2, Star, ChevronDown, ChevronRight } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 interface NurseLite {
@@ -122,7 +122,15 @@ export default function TeamScheduleTab({
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [draftName, setDraftName] = useState('');
   const [pendingPatternIndex, setPendingPatternIndex] = useState<number | null>(null);
-  const [previewDraftId, setPreviewDraftId] = useState<number | null>(null);
+  const [expandedDraftIds, setExpandedDraftIds] = useState<Set<number>>(new Set());
+  const toggleDraft = (id: number) => {
+    setExpandedDraftIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const fetchDrafts = async () => {
     setDraftsLoading(true);
@@ -455,17 +463,25 @@ export default function TeamScheduleTab({
                   {drafts.map(draft => {
                     const tm = draft.team_metrics ?? {};
                     const ratePct = ((tm.balanceRate ?? 0) * 100).toFixed(0);
-                    const isPreview = previewDraftId === draft.id;
+                    const isExpanded = expandedDraftIds.has(draft.id);
                     return (
                       <div key={draft.id} className="border-2 rounded-xl p-3 bg-white">
-                        <div className="flex justify-between items-start gap-3">
+                        <div
+                          className="flex justify-between items-start gap-3 cursor-pointer hover:bg-gray-50 -m-3 p-3 rounded-xl"
+                          onClick={() => toggleDraft(draft.id)}
+                        >
                           <div className="flex-1 min-w-0">
-                            <h4 className="font-bold truncate">{draft.name}</h4>
-                            <p className="text-xs text-gray-500">
+                            <div className="flex items-center gap-1">
+                              {isExpanded
+                                ? <ChevronDown size={18} className="text-gray-500 shrink-0" />
+                                : <ChevronRight size={18} className="text-gray-500 shrink-0" />}
+                              <h4 className="font-bold truncate">{draft.name}</h4>
+                            </div>
+                            <p className="text-xs text-gray-500 ml-6">
                               作成: {formatDate(draft.created_at)}
                               {draft.source && ` (${draft.source})`}
                             </p>
-                            <div className="mt-1 flex items-center gap-3 text-sm flex-wrap">
+                            <div className="mt-1 ml-6 flex items-center gap-3 text-sm flex-wrap">
                               <span>
                                 バランス達成率 <strong>{ratePct}%</strong>
                                 {tm.balancedDays != null && tm.totalDays != null && (
@@ -480,14 +496,7 @@ export default function TeamScheduleTab({
                               ))}
                             </div>
                           </div>
-                          <div className="flex gap-1 shrink-0">
-                            <button
-                              onClick={() => setPreviewDraftId(isPreview ? null : draft.id)}
-                              className="p-2 text-gray-600 hover:bg-gray-100 rounded"
-                              title="プレビュー"
-                            >
-                              <Eye size={16} />
-                            </button>
+                          <div className="flex gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                             <button
                               onClick={() => promoteDraftToSchedule(draft)}
                               className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-xs font-bold flex items-center gap-1"
@@ -504,7 +513,7 @@ export default function TeamScheduleTab({
                             </button>
                           </div>
                         </div>
-                        {isPreview && (
+                        {isExpanded && (
                           <div className="mt-3 overflow-auto max-h-72 border rounded">
                             <table className="text-xs border-collapse">
                               <thead className="bg-gray-100 sticky top-0 z-20">
