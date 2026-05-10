@@ -101,6 +101,23 @@ export default function TeamScheduleTab({
     [activeNurses]
   );
 
+  // 可視化: 現在 state にロード済みの team 別人数 (フロントから API に送られる値)
+  const teamStatus = useMemo(() => {
+    const counts: Record<string, number> = { A: 0, B: 0, C: 0, D: 0, E: 0 };
+    let withTeam = 0;
+    let withoutTeam = 0;
+    activeNurses.forEach(n => {
+      const t = (n.team as string) || null;
+      if (t) {
+        counts[t] = (counts[t] || 0) + 1;
+        withTeam++;
+      } else {
+        withoutTeam++;
+      }
+    });
+    return { counts, withTeam, withoutTeam, total: activeNurses.length };
+  }, [activeNurses]);
+
   const teamOfNurse = useMemo(() => {
     const map: Record<string, string | null> = {};
     activeNurses.forEach(n => { map[String(n.id)] = (n.team as string) || null; });
@@ -119,6 +136,34 @@ export default function TeamScheduleTab({
       // DEBUG: 送信内容を可視化 (フェーズ3問題切り分け用)
       console.log('[solve_team request] body.config', (reqBody as any)?.config);
       console.log('[solve_team request] body.nurses with team', (reqBody as any)?.nurses);
+
+      // 防御: 送信される nurses の team フィールドを実機で検証
+      const reqNurses: any[] = ((reqBody as any)?.nurses) || [];
+      const teamSentCount = reqNurses.filter(n => n && n.team).length;
+      const teamFieldExists = reqNurses.length > 0 && 'team' in reqNurses[0];
+      console.log(`[solve_team request] team field exists in payload: ${teamFieldExists}, ` +
+                  `nurses with team set: ${teamSentCount}/${reqNurses.length}`);
+      if (!teamFieldExists) {
+        alert(
+          'リクエスト payload に team フィールドが含まれていません。\n' +
+          '原因: フロントエンドが古いバージョンの可能性。\n' +
+          '対処: ハードリロード (Cmd+Shift+R) してください。'
+        );
+        setLoading(false);
+        setGeneratingPhase('');
+        return;
+      }
+      if (teamSentCount === 0 && teamStatus.withTeam > 0) {
+        // state には team があるのに payload に乗っていない異常
+        alert(
+          `フロントの state にはチーム ${teamStatus.withTeam}名 ありますが、\n` +
+          'リクエスト payload には全員 team=null になっています。\n' +
+          'ハードリロード (Cmd+Shift+R) で再試行してください。'
+        );
+        setLoading(false);
+        setGeneratingPhase('');
+        return;
+      }
 
       setGeneratingPhase('AI最適化を実行中...');
       const controller = new AbortController();
@@ -181,6 +226,39 @@ export default function TeamScheduleTab({
             各日の夜勤にチームから 1 名ずつ配置することを目指し、達成困難な場合は段階的に
             制約を緩和します。生成は <code>/solve_team</code> エンドポイントを使用。
           </p>
+
+          {/* チーム読み込み状況パネル (フロント state に何が乗っているかを可視化) */}
+          <div className={`rounded-xl p-3 mb-3 border ${
+            teamStatus.withTeam === 0
+              ? 'bg-red-50 border-red-300'
+              : 'bg-indigo-50 border-indigo-200'
+          }`}>
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <span className="font-bold text-gray-700">チーム読込状況:</span>
+              <span>所属あり <strong className={teamStatus.withTeam === 0 ? 'text-red-600' : 'text-indigo-700'}>{teamStatus.withTeam}</strong>名</span>
+              <span className="text-gray-500">/</span>
+              <span>所属なし <strong>{teamStatus.withoutTeam}</strong>名</span>
+              <span className="text-gray-500">/</span>
+              <span>全 {teamStatus.total}名</span>
+              <span className="text-gray-300">|</span>
+              {(['A', 'B', 'C', 'D', 'E'] as const).map(t => (
+                <span
+                  key={t}
+                  className={`text-xs px-2 py-0.5 rounded ${TEAM_BG_COLORS[t]} ${
+                    teamStatus.counts[t] === 0 ? 'opacity-40' : ''
+                  }`}
+                >
+                  {t}: {teamStatus.counts[t]}
+                </span>
+              ))}
+            </div>
+            {teamStatus.withTeam === 0 && (
+              <p className="mt-2 text-xs text-red-700">
+                ⚠️ 全員チーム未設定。ナース管理画面で設定後、ハードリロード (Cmd+Shift+R)
+                で再ロードしてください。Vercel デプロイ反映遅延の場合 1〜2 分待ってから再試行。
+              </p>
+            )}
+          </div>
 
           {/* チーム未設定警告 */}
           {nursesWithoutTeam.length > 0 && (
