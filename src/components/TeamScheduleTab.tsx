@@ -507,9 +507,9 @@ export default function TeamScheduleTab({
                         {isPreview && (
                           <div className="mt-3 overflow-auto max-h-72 border rounded">
                             <table className="text-xs border-collapse">
-                              <thead className="bg-gray-100 sticky top-0">
+                              <thead className="bg-gray-100 sticky top-0 z-20">
                                 <tr>
-                                  <th className="border px-2 py-1 sticky left-0 bg-gray-100 z-10">氏名</th>
+                                  <th className="border px-2 py-1 sticky left-0 bg-gray-100 z-30">氏名</th>
                                   {Object.values(draft.schedule_data)[0]?.map((_, dIdx) => (
                                     <th key={dIdx} className="border px-1 py-1 min-w-[28px]">{dIdx + 1}</th>
                                   ))}
@@ -731,9 +731,9 @@ export default function TeamScheduleTab({
                     <h4 className="font-bold text-sm mb-1">{pat.label}</h4>
                     <div className="overflow-auto max-h-72 border rounded">
                       <table className="text-xs border-collapse">
-                        <thead className="bg-gray-100 sticky top-0">
+                        <thead className="bg-gray-100 sticky top-0 z-20">
                           <tr>
-                            <th className="border px-2 py-1 sticky left-0 bg-gray-100 z-10">氏名</th>
+                            <th className="border px-2 py-1 sticky left-0 bg-gray-100 z-30">氏名</th>
                             {Object.values(pat.data)[0]?.map((_, dIdx) => (
                               <th key={dIdx} className="border px-1 py-1 min-w-[28px]">{dIdx + 1}</th>
                             ))}

@@ -3723,9 +3723,6 @@ const WardScheduleSystem = () => {
                 <button onClick={() => { setShowPasswordChange(true); setNewPasswordInput(''); setNewPasswordConfirm(''); setPasswordChangeError(''); }} className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 rounded-lg text-sm flex items-center gap-1">
                   <Lock size={16} /> パスワード変更
                 </button>
-                <button onClick={() => setShowTeamSchedule(true)} className="px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-sm flex items-center gap-1">
-                  <Users size={16} /> 夜勤チーム編成
-                </button>
                 <button onClick={handleAdminLogout} className="px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm flex items-center gap-1">
                   <LogOut size={16} /> ログアウト
                 </button>
@@ -5451,6 +5448,14 @@ const WardScheduleSystem = () => {
               >
                 <RefreshCw size={18} className={generating ? 'animate-spin' : ''} />
                 {generating ? (generatingPhase || '生成中...') : '自動生成'}
+              </button>
+              <button
+                onClick={() => setShowTeamSchedule(true)}
+                className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl flex items-center gap-2 shadow hover:shadow-lg transition-all"
+                title="夜勤チームの均等配分で生成 + 下書き管理"
+              >
+                <Users size={18} />
+                夜勤チーム編成
               </button>
               {schedule && (
                 <button
