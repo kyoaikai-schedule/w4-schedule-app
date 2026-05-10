@@ -1,15 +1,14 @@
 /**
- * 夜勤チーム編成タブ (フェーズ3)
+ * 夜勤チーム編成タブ (フェーズ3 + フェーズ4)
  *
  * フェーズ2 の /solve_team エンドポイントを呼び出し、teamMetrics を可視化する。
- * 既存の自動生成タブ・既存ロジックには一切干渉しない (本コンポーネント単体で完結)。
+ * フェーズ4 で「下書き保存・管理」機能を追加 (schedule_drafts テーブル使用)。
  *
- * - 親から渡される props で必要なデータと callback を受け取る
- * - /solve_team を呼び、teamPatterns に保持
- * - 採用時は親の onAcceptPattern callback を呼ぶ (= 既存の保存ロジック)
+ * 既存の自動生成タブ・既存ロジックには一切干渉しない (本コンポーネント単体で完結)。
  */
-import { useMemo, useState } from 'react';
-import { Users, Sparkles, X, RefreshCw } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Users, Sparkles, X, RefreshCw, Save, FolderOpen, Trash2, Star, Eye } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 
 interface NurseLite {
   id: number | string;
@@ -61,6 +60,23 @@ interface Props {
   solverAPIKey: string;
   activeNurses: NurseLite[];
   onAcceptPattern: (data: Record<string, string[]>) => void;
+  // フェーズ4 追加: schedule_drafts へ書き込むのに必要
+  ward: string;
+  targetYear: number;
+  targetMonth: number;
+}
+
+interface DraftRow {
+  id: number;
+  ward: string;
+  year: number;
+  month: number;
+  name: string;
+  schedule_data: Record<string, string[]>;
+  team_metrics: TeamMetrics | null;
+  source: string;
+  created_at: string;
+  updated_at: string;
 }
 
 const TEAM_BG_COLORS: Record<string, string> = {
@@ -89,12 +105,53 @@ export default function TeamScheduleTab({
   solverAPIKey,
   activeNurses,
   onAcceptPattern,
+  ward,
+  targetYear,
+  targetMonth,
 }: Props) {
   const [teamPatterns, setTeamPatterns] = useState<TeamPattern[]>([]);
   const [showTeamDetail, setShowTeamDetail] = useState<boolean[]>([]);
   const [showUnassignedDetail, setShowUnassignedDetail] = useState(false);
   const [loading, setLoading] = useState(false);
   const [generatingPhase, setGeneratingPhase] = useState('');
+
+  // フェーズ4: 下書き機能
+  const [view, setView] = useState<'generate' | 'drafts'>('generate');
+  const [drafts, setDrafts] = useState<DraftRow[]>([]);
+  const [draftsLoading, setDraftsLoading] = useState(false);
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [draftName, setDraftName] = useState('');
+  const [pendingPatternIndex, setPendingPatternIndex] = useState<number | null>(null);
+  const [previewDraftId, setPreviewDraftId] = useState<number | null>(null);
+
+  const fetchDrafts = async () => {
+    setDraftsLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('schedule_drafts')
+        .select('*')
+        .eq('ward', ward)
+        .eq('year', targetYear)
+        .eq('month', targetMonth)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      setDrafts((data as DraftRow[]) || []);
+    } catch (e: any) {
+      console.error('[fetchDrafts] error:', e);
+      // 'relation "schedule_drafts" does not exist' は無視 (マイグレーション未実行)
+      if (!String(e?.message || '').includes('schedule_drafts')) {
+        alert(`下書き読み込みエラー: ${e?.message ?? '不明'}`);
+      }
+      setDrafts([]);
+    } finally {
+      setDraftsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (show) fetchDrafts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [show, ward, targetYear, targetMonth]);
 
   const nursesWithoutTeam = useMemo(
     () => activeNurses.filter(n => !n.team),
@@ -200,12 +257,100 @@ export default function TeamScheduleTab({
       alert('解なしのため採用できません');
       return;
     }
-    if (!confirm(`${pattern.label} を採用して既存の勤務表に上書き保存しますか?`)) return;
-
-    // data の key は string. 親側は Record<number, ...> を期待する箇所もあるが、
-    // 既存実装では string でも number でも動作するので生のまま渡す。
+    const balanceRate = pattern.metrics?.teamMetrics?.balanceRate ?? 0;
+    const ratePct = (balanceRate * 100).toFixed(0);
+    const confirmed = confirm(
+      `${pattern.label} を正式採用しますか?\n\n` +
+      `⚠️ 現在の勤務表は上書きされます。\n` +
+      `この操作は取り消せません。\n\n` +
+      `バランス達成率: ${ratePct}%\n\n` +
+      `※ 後で比較したい場合は、先に「下書きに保存」してください。`
+    );
+    if (!confirmed) return;
     onAcceptPattern(pattern.data as Record<string, string[]>);
-    alert('勤務表を保存しました。既存の自動生成タブで確認できます。');
+    alert('正式採用しました。既存の自動生成タブで確認できます。');
+  };
+
+  // === フェーズ4: 下書き保存 ===
+  const openSaveDialog = (idx: number) => {
+    const pattern = teamPatterns[idx];
+    if (!pattern || !pattern.data || Object.keys(pattern.data).length === 0) {
+      alert('解なしのため保存できません');
+      return;
+    }
+    const ratePct = ((pattern.metrics?.teamMetrics?.balanceRate ?? 0) * 100).toFixed(0);
+    setPendingPatternIndex(idx);
+    setDraftName(`${pattern.label} (バランス${ratePct}%)`);
+    setShowSaveDialog(true);
+  };
+
+  const saveDraft = async () => {
+    if (pendingPatternIndex === null) return;
+    const pattern = teamPatterns[pendingPatternIndex];
+    if (!pattern) return;
+    const name = draftName.trim();
+    if (!name) {
+      alert('下書き名を入力してください');
+      return;
+    }
+    try {
+      const { error } = await supabase.from('schedule_drafts').insert({
+        ward,
+        year: targetYear,
+        month: targetMonth,
+        name,
+        schedule_data: pattern.data,
+        team_metrics: pattern.metrics?.teamMetrics ?? null,
+        source: 'team',
+      });
+      if (error) throw error;
+      alert(`下書き「${name}」を保存しました`);
+      setShowSaveDialog(false);
+      setPendingPatternIndex(null);
+      setDraftName('');
+      fetchDrafts();
+    } catch (e: any) {
+      console.error('[saveDraft] error:', e);
+      const msg = String(e?.message || '');
+      if (msg.includes('schedule_drafts') && msg.includes('does not exist')) {
+        alert('下書きテーブルが見つかりません。\nDB マイグレーション (2026-05-10_add_schedule_drafts.sql) を実行してください。');
+      } else {
+        alert(`下書き保存エラー: ${e?.message ?? '不明'}`);
+      }
+    }
+  };
+
+  const promoteDraftToSchedule = (draft: DraftRow) => {
+    const balanceRate = draft.team_metrics?.balanceRate ?? 0;
+    const ratePct = (balanceRate * 100).toFixed(0);
+    const confirmed = confirm(
+      `下書き「${draft.name}」を正式採用しますか?\n\n` +
+      `⚠️ 現在の勤務表は上書きされます。\n` +
+      `この操作は取り消せません。\n\n` +
+      `バランス達成率: ${ratePct}%`
+    );
+    if (!confirmed) return;
+    onAcceptPattern(draft.schedule_data);
+    alert(`「${draft.name}」を正式採用しました。`);
+  };
+
+  const deleteDraft = async (draft: DraftRow) => {
+    if (!confirm(`下書き「${draft.name}」を削除しますか?`)) return;
+    try {
+      const { error } = await supabase.from('schedule_drafts').delete().eq('id', draft.id);
+      if (error) throw error;
+      fetchDrafts();
+    } catch (e: any) {
+      console.error('[deleteDraft] error:', e);
+      alert(`削除エラー: ${e?.message ?? '不明'}`);
+    }
+  };
+
+  const formatDate = (iso: string) => {
+    try {
+      const d = new Date(iso);
+      return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+    } catch { return iso; }
   };
 
   return (
@@ -259,6 +404,159 @@ export default function TeamScheduleTab({
               </p>
             )}
           </div>
+
+          {/* ビュー切替トグル (生成 / 下書き一覧) */}
+          <div className="flex gap-2 mb-4 border-b border-gray-200">
+            <button
+              onClick={() => setView('generate')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                view === 'generate'
+                  ? 'border-indigo-600 text-indigo-700'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <Sparkles size={14} className="inline mr-1" />
+              生成
+            </button>
+            <button
+              onClick={() => setView('drafts')}
+              className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                view === 'drafts'
+                  ? 'border-indigo-600 text-indigo-700'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              <FolderOpen size={14} className="inline mr-1" />
+              下書き一覧 ({drafts.length}件)
+            </button>
+          </div>
+
+          {view === 'drafts' && (
+            <div>
+              <div className="flex justify-between items-center mb-3">
+                <h3 className="font-bold text-lg">
+                  {targetYear}年{targetMonth + 1}月の下書き ({drafts.length}件)
+                </h3>
+                <button
+                  onClick={fetchDrafts}
+                  disabled={draftsLoading}
+                  className="text-xs px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded disabled:opacity-50"
+                >
+                  {draftsLoading ? '読込中...' : '再読込'}
+                </button>
+              </div>
+              {drafts.length === 0 ? (
+                <p className="text-gray-500 text-sm py-8 text-center">
+                  下書きはまだありません。「生成」タブでパターンを作成し、
+                  「下書きに保存」ボタンから保存できます。
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {drafts.map(draft => {
+                    const tm = draft.team_metrics ?? {};
+                    const ratePct = ((tm.balanceRate ?? 0) * 100).toFixed(0);
+                    const isPreview = previewDraftId === draft.id;
+                    return (
+                      <div key={draft.id} className="border-2 rounded-xl p-3 bg-white">
+                        <div className="flex justify-between items-start gap-3">
+                          <div className="flex-1 min-w-0">
+                            <h4 className="font-bold truncate">{draft.name}</h4>
+                            <p className="text-xs text-gray-500">
+                              作成: {formatDate(draft.created_at)}
+                              {draft.source && ` (${draft.source})`}
+                            </p>
+                            <div className="mt-1 flex items-center gap-3 text-sm flex-wrap">
+                              <span>
+                                バランス達成率 <strong>{ratePct}%</strong>
+                                {tm.balancedDays != null && tm.totalDays != null && (
+                                  <span className="text-gray-500"> ({tm.balancedDays}/{tm.totalDays}日)</span>
+                                )}
+                              </span>
+                              {(tm.usedTeams || []).map(t => (
+                                <span
+                                  key={t}
+                                  className={`text-[10px] px-1.5 py-0.5 rounded ${TEAM_BG_COLORS[t] ?? 'bg-gray-100'}`}
+                                >{t}</span>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="flex gap-1 shrink-0">
+                            <button
+                              onClick={() => setPreviewDraftId(isPreview ? null : draft.id)}
+                              className="p-2 text-gray-600 hover:bg-gray-100 rounded"
+                              title="プレビュー"
+                            >
+                              <Eye size={16} />
+                            </button>
+                            <button
+                              onClick={() => promoteDraftToSchedule(draft)}
+                              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-xs font-bold flex items-center gap-1"
+                              title="正式採用 (既存勤務表に上書き)"
+                            >
+                              <Star size={14} /> 正式採用
+                            </button>
+                            <button
+                              onClick={() => deleteDraft(draft)}
+                              className="p-2 text-red-600 hover:bg-red-50 rounded"
+                              title="削除"
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </div>
+                        {isPreview && (
+                          <div className="mt-3 overflow-auto max-h-72 border rounded">
+                            <table className="text-xs border-collapse">
+                              <thead className="bg-gray-100 sticky top-0">
+                                <tr>
+                                  <th className="border px-2 py-1 sticky left-0 bg-gray-100 z-10">氏名</th>
+                                  {Object.values(draft.schedule_data)[0]?.map((_, dIdx) => (
+                                    <th key={dIdx} className="border px-1 py-1 min-w-[28px]">{dIdx + 1}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {activeNurses.map(nurse => {
+                                  const shifts = draft.schedule_data[String(nurse.id)] || [];
+                                  const team = teamOfNurse[String(nurse.id)];
+                                  return (
+                                    <tr key={nurse.id}>
+                                      <td className="border px-2 py-1 sticky left-0 bg-white z-10 whitespace-nowrap">
+                                        {nurse.name}
+                                        {team && (
+                                          <span className={`ml-1 text-[10px] px-1 rounded ${TEAM_BG_COLORS[team] ?? ''}`}>
+                                            {team}
+                                          </span>
+                                        )}
+                                      </td>
+                                      {shifts.map((s, dIdx) => {
+                                        const isNightCell = ['夜', '管夜', '明', '管明'].includes(s);
+                                        const teamCls = (isNightCell && team && TEAM_BG_COLORS[team]) || '';
+                                        return (
+                                          <td
+                                            key={dIdx}
+                                            className={`border px-1 py-0.5 text-center ${teamCls}`}
+                                          >
+                                            {s || ''}
+                                          </td>
+                                        );
+                                      })}
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {view === 'generate' && <>
 
           {/* チーム未設定警告 */}
           {nursesWithoutTeam.length > 0 && (
@@ -398,12 +696,22 @@ export default function TeamScheduleTab({
                             </div>
                           )}
 
-                          <button
-                            onClick={() => acceptPattern(idx)}
-                            className="w-full px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold"
-                          >
-                            このパターンを採用
-                          </button>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => openSaveDialog(idx)}
+                              className="flex-1 px-2 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1"
+                              title="下書きに保存 (既存勤務表は変更されません)"
+                            >
+                              <Save size={14} /> 下書き保存
+                            </button>
+                            <button
+                              onClick={() => acceptPattern(idx)}
+                              className="flex-1 px-2 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold"
+                              title="既存勤務表に上書き保存"
+                            >
+                              ⭐ 正式採用
+                            </button>
+                          </div>
                         </>
                       )}
                     </div>
@@ -470,6 +778,48 @@ export default function TeamScheduleTab({
                 );
               })}
             </>
+          )}
+
+          </>}
+          {/* === 下書き保存ダイアログ === */}
+          {showSaveDialog && (
+            <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4">
+              <div className="bg-white rounded-xl p-5 w-full max-w-md shadow-2xl">
+                <h3 className="font-bold text-lg mb-3 flex items-center gap-2">
+                  <Save size={18} /> 下書きを保存
+                </h3>
+                <p className="text-sm text-gray-600 mb-3">
+                  この下書きに名前を付けて保存します。既存の勤務表は上書きされません。
+                </p>
+                <input
+                  type="text"
+                  value={draftName}
+                  onChange={(e) => setDraftName(e.target.value)}
+                  placeholder="例: ベテラン重視案"
+                  maxLength={100}
+                  autoFocus
+                  className="w-full px-3 py-2 border-2 rounded-lg mb-4"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') saveDraft();
+                    if (e.key === 'Escape') setShowSaveDialog(false);
+                  }}
+                />
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => { setShowSaveDialog(false); setPendingPatternIndex(null); }}
+                    className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg text-sm"
+                  >
+                    キャンセル
+                  </button>
+                  <button
+                    onClick={saveDraft}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-bold"
+                  >
+                    保存
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </div>
       </div>
