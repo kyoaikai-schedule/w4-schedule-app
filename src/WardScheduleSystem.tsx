@@ -1580,6 +1580,7 @@ const WardScheduleSystem = () => {
         noDayShift: pr.noDayShift || false,
         maxNightShifts: pr.maxNightShifts ?? generateConfig.maxNightShifts,
         excludeFromGeneration: false,
+        team: (n as any).team ?? null,  // フェーズ3: /solve_team で参照される (既存 /solve は無視)
       };
     });
 
