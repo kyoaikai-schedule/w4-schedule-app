@@ -731,6 +731,18 @@ export default function TeamScheduleTab({
                   const usedTeams = tm.usedTeams ?? [];
                   const hasError = !pat.data || Object.keys(pat.data).length === 0;
                   const ratePct = (balanceRate * 100).toFixed(0);
+                  const m: any = pat.metrics ?? {};
+                  // 緩和レベル/フォールバック状態のバッジ
+                  let statusBadge: { text: string; cls: string } | null = null;
+                  if (m.fallbackMode === 'error') {
+                    statusBadge = { text: '❌ エラー', cls: 'bg-gray-200 text-gray-700' };
+                  } else if (m.fallbackMode === 'greedy') {
+                    statusBadge = { text: '⚠️ ベストエフォート', cls: 'bg-red-100 text-red-700' };
+                  } else if (typeof m.relaxLevel === 'number') {
+                    if (m.relaxLevel === 0) statusBadge = { text: '✅ 完全遵守', cls: 'bg-green-100 text-green-700' };
+                    else if (m.relaxLevel === 1 || m.relaxLevel === 2) statusBadge = { text: '⚠️ 一部緩和', cls: 'bg-yellow-100 text-yellow-700' };
+                    else if (m.relaxLevel === 3 || m.relaxLevel === 4) statusBadge = { text: '⚠️ 大幅緩和', cls: 'bg-orange-100 text-orange-700' };
+                  }
 
                   return (
                     <div
@@ -742,13 +754,26 @@ export default function TeamScheduleTab({
                         : 'border-orange-400 bg-orange-50/30'
                       }`}
                     >
+                      {statusBadge && (
+                        <div className="mb-2">
+                          <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-bold ${statusBadge.cls}`}>{statusBadge.text}</span>
+                        </div>
+                      )}
                       <div className="flex justify-between items-center mb-2">
                         <h4 className="font-bold">{pat.label}</h4>
                         {hasError && <span className="px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-xs font-bold">解なし</span>}
                       </div>
+                      {!hasError && m.warningMessage && (
+                        <div className="mb-3 px-2 py-1.5 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+                          {m.warningMessage}
+                        </div>
+                      )}
 
                       {hasError ? (
-                        <p className="text-sm text-red-700">⚠️ このパターンは生成できませんでした</p>
+                        <div className="text-sm text-red-700 space-y-1">
+                          <p>⚠️ このパターンは生成できませんでした</p>
+                          {m.error && <p className="text-xs">{m.error}</p>}
+                        </div>
                       ) : (
                         <>
                           <div className="space-y-1 text-sm mb-2">
