@@ -352,6 +352,8 @@ const WardScheduleSystem = () => {
   const [generatingPhase, setGeneratingPhase] = useState('');
   const [generatedPatterns, setGeneratedPatterns] = useState<any[]>([]);
   const [showPatternSelect, setShowPatternSelect] = useState(false);
+  // 全パターンがdata空（生成失敗）になった時のリトライUI表示用
+  const [allFailedRetry, setAllFailedRetry] = useState<{ show: boolean; errors: string[] }>({ show: false, errors: [] });
   const [deleteConfirm, setDeleteConfirm] = useState(null); // 削除確認用
   const [showGenerateConfig, setShowGenerateConfig] = useState(false); // 生成設定モーダル
   const [useSolverAPI, setUseSolverAPI] = useState(true); // AI最適化API使用フラグ
@@ -1701,19 +1703,52 @@ const WardScheduleSystem = () => {
             data[n.id] = new Array(daysInMonth).fill(null);
           });
 
+          const report: string[] = [`✅ OR-Tools CP-SATソルバーで生成`];
+          const fbMode = p.metrics?.fallbackMode;
+          const rl = p.metrics?.relaxLevel;
+          if (fbMode === 'greedy') {
+            report.push('⚠️ ベストエフォート生成: 制約が厳しすぎるため簡易アルゴリズムで生成しました。ルール違反を確認して手動で調整してください');
+          } else if (fbMode === 'error') {
+            report.push('❌ サーバーエラー: ' + (p.metrics?.error || '不明'));
+          } else if (rl === 0) {
+            report.push('✅ 全制約を完全遵守');
+          } else if (rl === 1) {
+            report.push('⚠️ 日勤人数を一部緩和して生成（±1名）');
+          } else if (rl === 2) {
+            report.push('⚠️ 日勤・夜勤人数を一部緩和して生成（±1名）');
+          } else if (rl === 3) {
+            report.push('⚠️ 連続勤務・夜勤回数を一部緩和して生成');
+          } else if (rl === 4) {
+            report.push('⚠️ すべての制約をソフト化して生成（最終手段）');
+          }
+          if (p.metrics?.warningMessage) {
+            report.push('ℹ️ ' + p.metrics.warningMessage);
+          }
+
           return {
             label: p.label || `パターン${String.fromCharCode(65 + idx)}`,
             data,
             score: p.score || 0,
             metrics: p.metrics || {},
-            report: [
-              `✅ OR-Tools CP-SATソルバーで生成`,
-              p.metrics?.relaxLevel > 0
-                ? `⚠️ 一部制約を緩和して生成（レベル${p.metrics.relaxLevel}）`
-                : `✅ 全制約を完全遵守`,
-            ],
+            report,
           };
         });
+
+        // 全パターンが data 空の場合はモーダル選択ではなく専用リトライ UI を表示
+        const allEmpty = patterns.every(p => !p.data || Object.keys(p.data).length === 0);
+        if (allEmpty) {
+          const errs: string[] = [];
+          patterns.forEach(p => {
+            if (p.metrics?.error) errs.push(String(p.metrics.error));
+            if (Array.isArray(p.metrics?.validationErrors)) {
+              p.metrics.validationErrors.slice(0, 3).forEach((e: string) => errs.push(e));
+            }
+          });
+          setAllFailedRetry({ show: true, errors: Array.from(new Set(errs)).slice(0, 10) });
+          setGenerating(false);
+          setGeneratingPhase('');
+          return;
+        }
 
         setGeneratedPatterns(patterns);
         setShowPatternSelect(true);
@@ -3595,6 +3630,7 @@ const WardScheduleSystem = () => {
               職員用（休み希望入力）
             </button>
           </div>
+
 
           <p className="text-center text-xs text-gray-400 mt-8">
             データはサーバーに安全に保存されます
@@ -7837,6 +7873,63 @@ const WardScheduleSystem = () => {
 
         {/* 勤務表生成設定モーダル */}
         {/* パターン選択モーダル */}
+        {allFailedRetry.show && (
+          <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
+            <div className="min-h-full flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl">
+                <div className="flex items-center justify-between p-6 border-b">
+                  <h3 className="text-xl font-bold text-red-700">⚠️ 勤務表を生成できませんでした</h3>
+                  <button
+                    type="button"
+                    onClick={() => setAllFailedRetry({ show: false, errors: [] })}
+                    className="p-2 hover:bg-gray-100 rounded-full"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+                <div className="p-6 space-y-4">
+                  <p className="text-sm text-gray-700">
+                    制約条件が厳しすぎて勤務表を生成できませんでした。以下を試してください:
+                  </p>
+                  <ul className="text-sm text-gray-700 list-disc list-inside space-y-1 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                    <li>職員の希望入力を一部削除する</li>
+                    <li>必要人数を調整する（日勤・夜勤）</li>
+                    <li>夜勤回数上限を緩和する</li>
+                    <li>連続勤務上限を見直す</li>
+                  </ul>
+                  {allFailedRetry.errors.length > 0 && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                      <p className="text-xs font-bold text-red-700 mb-1">ソルバーからの主なエラー:</p>
+                      <ul className="text-xs text-red-700 list-disc list-inside space-y-0.5">
+                        {allFailedRetry.errors.map((e, i) => (
+                          <li key={i}>{e}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+                <div className="flex justify-end gap-2 p-4 border-t">
+                  <button
+                    onClick={() => setAllFailedRetry({ show: false, errors: [] })}
+                    className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg text-sm"
+                  >
+                    閉じる
+                  </button>
+                  <button
+                    onClick={() => {
+                      setAllFailedRetry({ show: false, errors: [] });
+                      setShowGenerateConfig(true);
+                    }}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-bold"
+                  >
+                    設定を見直して再生成
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {showPatternSelect && generatedPatterns.length > 0 && (
           <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
             <div className="min-h-full flex items-center justify-center p-4">
@@ -7852,6 +7945,17 @@ const WardScheduleSystem = () => {
                       const m = pat.metrics || {};
                       const hasError = !pat.data || Object.keys(pat.data).length === 0 || m.error;
                       const isBest = idx === 0 && !hasError;
+                      // 緩和レベル / フォールバック状態のバッジ
+                      let statusBadge: { text: string; cls: string } | null = null;
+                      if (m.fallbackMode === 'error') {
+                        statusBadge = { text: '❌ エラー', cls: 'bg-gray-200 text-gray-700' };
+                      } else if (m.fallbackMode === 'greedy') {
+                        statusBadge = { text: '⚠️ ベストエフォート', cls: 'bg-red-100 text-red-700' };
+                      } else if (typeof m.relaxLevel === 'number') {
+                        if (m.relaxLevel === 0) statusBadge = { text: '✅ 完全遵守', cls: 'bg-green-100 text-green-700' };
+                        else if (m.relaxLevel === 1 || m.relaxLevel === 2) statusBadge = { text: '⚠️ 一部緩和', cls: 'bg-yellow-100 text-yellow-700' };
+                        else if (m.relaxLevel === 3 || m.relaxLevel === 4) statusBadge = { text: '⚠️ 大幅緩和', cls: 'bg-orange-100 text-orange-700' };
+                      }
                       const nb = typeof m.nightBalance === 'number' ? m.nightBalance : null;
                       const ds = typeof m.dayShortage === 'number' ? m.dayShortage : null;
                       const ns = typeof m.nightShortage === 'number' ? m.nightShortage : null;
@@ -7861,11 +7965,21 @@ const WardScheduleSystem = () => {
                       const score = typeof pat.score === 'number' ? pat.score : (typeof m.totalScore === 'number' ? m.totalScore : 0);
                       return (
                         <div key={idx} className={`border-2 rounded-xl p-4 ${hasError ? 'border-red-300 bg-red-50/40' : isBest ? 'border-green-400 bg-green-50/30' : 'border-gray-200'}`}>
+                          {statusBadge && (
+                            <div className="mb-2">
+                              <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-bold ${statusBadge.cls}`}>{statusBadge.text}</span>
+                            </div>
+                          )}
                           <div className="flex items-center justify-between mb-3">
                             <h4 className="font-bold text-lg">{pat.label}</h4>
                             {hasError && <span className="px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-xs font-bold">解なし</span>}
                             {!hasError && isBest && <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-bold">おすすめ</span>}
                           </div>
+                          {!hasError && m.warningMessage && (
+                            <div className="mb-3 px-2 py-1.5 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+                              {m.warningMessage}
+                            </div>
+                          )}
                           {hasError ? (
                             <div className="text-sm text-red-700 space-y-1">
                               <p className="font-bold">⚠️ このパターンは生成できませんでした</p>
