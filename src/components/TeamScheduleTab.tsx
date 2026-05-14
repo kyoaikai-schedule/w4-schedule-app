@@ -74,6 +74,16 @@ interface TeamPattern {
   metrics?: { teamMetrics?: TeamMetrics } & Record<string, unknown>;
 }
 
+interface GenerateConfigLite {
+  nightShiftPattern: number[];
+  startWithThree?: boolean;
+  weekdayDayStaff: number;
+  weekendDayStaff: number;
+  yearEndDayStaff?: number;
+  newYearDayStaff?: number;
+  [key: string]: unknown;
+}
+
 interface Props {
   show: boolean;
   onClose: () => void;
@@ -86,6 +96,204 @@ interface Props {
   ward: string;
   targetYear: number;
   targetMonth: number;
+  // 集計行 (tfoot) の要件判定に使用 (通常モードの勤務表と同じ表示にするため)
+  generateConfig: GenerateConfigLite;
+}
+
+// ──────────────────────────────────────
+// HcuScheduleSystem の同名関数と同一ロジック (集計行で使用)
+// ──────────────────────────────────────
+const getDayOfWeekJa = (year: number, month: number, day: number): string => {
+  const d = new Date(year, month, day);
+  return ['日', '月', '火', '水', '木', '金', '土'][d.getDay()];
+};
+
+const getJapaneseHolidaysJa = (year: number, month: number): number[] => {
+  const holidays: number[] = [];
+  const m = month + 1;
+  if (m === 1) { holidays.push(1); holidays.push(11); }
+  if (m === 2) holidays.push(23);
+  if (m === 3) holidays.push(21);
+  if (m === 4) holidays.push(29);
+  if (m === 5) { holidays.push(3); holidays.push(4); holidays.push(5); }
+  if (m === 7) holidays.push(20);
+  if (m === 8) holidays.push(11);
+  if (m === 9) { holidays.push(16); holidays.push(23); }
+  if (m === 10) holidays.push(14);
+  if (m === 11) { holidays.push(3); holidays.push(23); }
+  const getNthMonday = (y: number, mo: number, n: number): number => {
+    let count = 0;
+    for (let d = 1; d <= 31; d++) {
+      const date = new Date(y, mo, d);
+      if (date.getMonth() !== mo) break;
+      if (date.getDay() === 1) { count++; if (count === n) return d; }
+    }
+    return -1;
+  };
+  if (m === 1) { const d = getNthMonday(year, month, 2); if (d > 0) holidays.push(d); }
+  if (m === 7) { const d = getNthMonday(year, month, 3); if (d > 0) holidays.push(d); }
+  if (m === 9) { const d = getNthMonday(year, month, 3); if (d > 0) holidays.push(d); }
+  if (m === 10) { const d = getNthMonday(year, month, 2); if (d > 0) holidays.push(d); }
+  return Array.from(new Set(holidays)).sort((a, b) => a - b);
+};
+
+// 指定日 (i: 0-based) の夜勤必要数。HcuScheduleSystem の tfoot と同一ロジック。
+const getNightRequiredAt = (
+  i: number,
+  daysInMonth: number,
+  targetYear: number,
+  targetMonth: number,
+  cfg: GenerateConfigLite,
+): number => {
+  const firstDow = new Date(targetYear, targetMonth, 1).getDay();
+  const weeks: { s: number; e: number; c: number }[] = [];
+  let cur = 1, wi = 0;
+  const dUS = firstDow === 0 ? 0 : (7 - firstDow);
+  const pattern = cfg.nightShiftPattern || [4, 4];
+  if (dUS > 0) {
+    weeks.push({ s: 1, e: Math.min(dUS, daysInMonth), c: cfg.startWithThree ? pattern[0] : pattern[1] });
+    cur = dUS + 1; wi = 1;
+  }
+  while (cur <= daysInMonth) {
+    const pi = cfg.startWithThree ? (wi % 2) : ((wi + 1) % 2);
+    const ed = Math.min(cur + 6, daysInMonth);
+    weeks.push({ s: cur, e: ed, c: pattern[pi] });
+    cur = ed + 1; wi++;
+  }
+  const d = i + 1;
+  for (const p of weeks) { if (d >= p.s && d <= p.e) return p.c; }
+  return 3;
+};
+
+// 指定日 (i: 0-based) の日勤必要数と「厳格判定」(weekend/holiday/year-end/new-year なら厳格)。
+const getDayShiftRequirementAt = (
+  i: number,
+  targetYear: number,
+  targetMonth: number,
+  cfg: GenerateConfigLite,
+  holidays: number[],
+): { minRequired: number; isStrict: boolean } => {
+  const dow = getDayOfWeekJa(targetYear, targetMonth, i + 1);
+  const isWeekend = dow === '土' || dow === '日';
+  const day = i + 1;
+  const isYearEnd = targetMonth === 11 && (day === 30 || day === 31);
+  const isNewYear = targetMonth === 0 && (day >= 1 && day <= 3);
+  const isNatHol = holidays.includes(day);
+  const minRequired = isYearEnd ? (cfg.yearEndDayStaff ?? cfg.weekendDayStaff) :
+                      isNewYear ? (cfg.newYearDayStaff ?? cfg.weekendDayStaff) :
+                      (isWeekend || isNatHol) ? cfg.weekendDayStaff :
+                      cfg.weekdayDayStaff;
+  const isStrict = isWeekend || isNatHol || isYearEnd || isNewYear;
+  return { minRequired, isStrict };
+};
+
+// 通常モードと同じ tfoot (集計行 5行) を返すレンダラ
+function renderScheduleTfoot(
+  scheduleData: Record<string, string[]>,
+  activeNurses: NurseLite[],
+  daysInMonth: number,
+  targetYear: number,
+  targetMonth: number,
+  cfg: GenerateConfigLite,
+): JSX.Element {
+  const holidays = getJapaneseHolidaysJa(targetYear, targetMonth);
+  return (
+    <tfoot className="sticky bottom-0 z-20">
+      {/* 夜勤人数 (= '夜' のみカウント。'管夜' は除外) */}
+      <tr className="bg-purple-50 font-bold">
+        <td className="border px-2 py-1 sticky left-0 bg-purple-50 z-30 text-purple-800">夜勤人数</td>
+        {Array.from({ length: daysInMonth }, (_, i) => {
+          let count = 0;
+          activeNurses.forEach(nurse => {
+            const shift = (scheduleData[String(nurse.id)] || [])[i];
+            if (shift === '夜') count++;
+          });
+          const nightRequired = getNightRequiredAt(i, daysInMonth, targetYear, targetMonth, cfg);
+          return (
+            <td
+              key={i}
+              className={`border text-center p-1 text-purple-700 min-w-[28px] ${
+                count < nightRequired ? 'bg-red-200 text-red-700' :
+                count > nightRequired ? 'bg-yellow-200 text-yellow-700' : ''
+              }`}
+            >
+              <div>{count}</div>
+              <div className="text-[9px] text-gray-400">/{nightRequired}</div>
+            </td>
+          );
+        })}
+      </tr>
+      {/* 夜明人数 (= '明' のみカウント。'管明' は除外) */}
+      <tr className="bg-pink-50 font-bold">
+        <td className="border px-2 py-1 sticky left-0 bg-pink-50 z-30 text-pink-800">夜明人数</td>
+        {Array.from({ length: daysInMonth }, (_, i) => {
+          let count = 0;
+          activeNurses.forEach(nurse => {
+            const shift = (scheduleData[String(nurse.id)] || [])[i];
+            if (shift === '明') count++;
+          });
+          return (
+            <td key={i} className="border text-center p-1 text-pink-700 min-w-[28px]">{count}</td>
+          );
+        })}
+      </tr>
+      {/* 日勤人数 (= '日' のみカウント) */}
+      <tr className="bg-blue-50 font-bold">
+        <td className="border px-2 py-1 sticky left-0 bg-blue-50 z-30 text-blue-800">日勤人数</td>
+        {Array.from({ length: daysInMonth }, (_, i) => {
+          let count = 0;
+          activeNurses.forEach(nurse => {
+            const shift = (scheduleData[String(nurse.id)] || [])[i];
+            if (shift === '日') count++;
+          });
+          const { minRequired, isStrict } = getDayShiftRequirementAt(i, targetYear, targetMonth, cfg, holidays);
+          const isDeviation = isStrict
+            ? count !== minRequired
+            : (count < minRequired || count > minRequired + 2);
+          return (
+            <td
+              key={i}
+              className={`border text-center p-1 text-blue-700 min-w-[28px] ${
+                isDeviation ? 'outline outline-3 outline-red-500 -outline-offset-1 bg-red-50' : ''
+              }`}
+            >
+              <div>{count}</div>
+              <div className="text-[9px] text-gray-400">/{isStrict ? minRequired : `${minRequired}-${minRequired + 2}`}</div>
+            </td>
+          );
+        })}
+      </tr>
+      {/* 休日人数 (= '休' or '有' をカウント。半休は 0.5) */}
+      <tr className="bg-gray-100 font-bold">
+        <td className="border px-2 py-1 sticky left-0 bg-gray-100 z-30 text-gray-700">休日人数</td>
+        {Array.from({ length: daysInMonth }, (_, i) => {
+          let count = 0;
+          activeNurses.forEach(nurse => {
+            const shift = (scheduleData[String(nurse.id)] || [])[i];
+            if (shift === '休' || shift === '有') count++;
+            else if (shift === '午前半' || shift === '午後半') count += 0.5;
+          });
+          return (
+            <td key={i} className="border text-center p-1 text-gray-600 min-w-[28px]">{count}</td>
+          );
+        })}
+      </tr>
+      {/* 出勤計 (= 休/有/明/管明/半休 以外の有効ラベル: 日/夜/管夜) */}
+      <tr className="bg-amber-50 font-bold">
+        <td className="border px-2 py-1 sticky left-0 bg-amber-50 z-30 text-amber-800">出勤計</td>
+        {Array.from({ length: daysInMonth }, (_, i) => {
+          let count = 0;
+          activeNurses.forEach(nurse => {
+            const shift = (scheduleData[String(nurse.id)] || [])[i];
+            if (shift && shift !== '休' && shift !== '有' && shift !== '明' && shift !== '管明' && shift !== '午前半' && shift !== '午後半') count++;
+          });
+          return (
+            <td key={i} className="border text-center p-1 text-amber-700 min-w-[28px]">{count}</td>
+          );
+        })}
+      </tr>
+    </tfoot>
+  );
 }
 
 interface DraftRow {
@@ -188,7 +396,10 @@ export default function TeamScheduleTab({
   ward,
   targetYear,
   targetMonth,
+  generateConfig,
 }: Props) {
+  // 月の日数 (集計行 tfoot で使用)
+  const daysInMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
   const [teamPatterns, setTeamPatterns] = useState<TeamPattern[]>([]);
   const [showTeamDetail, setShowTeamDetail] = useState<boolean[]>([]);
   const [showUnassignedDetail, setShowUnassignedDetail] = useState(false);
@@ -636,6 +847,7 @@ export default function TeamScheduleTab({
                                   );
                                 })}
                               </tbody>
+                              {renderScheduleTfoot(draft.schedule_data, activeNurses, daysInMonth, targetYear, targetMonth, generateConfig)}
                             </table>
                           </div>
                           </>
@@ -910,6 +1122,7 @@ export default function TeamScheduleTab({
                             );
                           })}
                         </tbody>
+                        {renderScheduleTfoot(pat.data as Record<string, string[]>, activeNurses, daysInMonth, targetYear, targetMonth, generateConfig)}
                       </table>
                     </div>
                   </div>
