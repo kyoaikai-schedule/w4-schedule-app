@@ -358,7 +358,7 @@ const WardScheduleSystem = () => {
   const [showGenerateConfig, setShowGenerateConfig] = useState(false); // 生成設定モーダル
   const [useSolverAPI, setUseSolverAPI] = useState(true); // AI最適化API使用フラグ
   const [solverAPIUrl] = useState('https://schedule-solver-api-749509422247.asia-northeast1.run.app');
-  const [solverAPIKey] = useState('kyoaikai-solver-2026');
+  const [solverAPIKey] = useState(import.meta.env.VITE_SOLVER_API_KEY || '');
   const [isMaximized, setIsMaximized] = useState(false); // 勤務表最大化
   const [showDeadlineSettings, setShowDeadlineSettings] = useState(false); // 締め切り設定モーダル
   const [showPasswordChange, setShowPasswordChange] = useState(false); // パスワード変更モーダル
