@@ -1570,6 +1570,23 @@ const WardScheduleSystem = () => {
       if (dow === 0 || dow === 6 || holidays.includes(d + 1)) weekends.push(d);
     }
 
+    // === ソルバーAPIは整数の係数・定数のみ受け付ける（CP-SAT）ため、送信前に全数値を整数化する ===
+    // 端数が出た場合はフェイルセーフ方向に丸める:
+    //   ・上限値(maxXxx): 切り上げ(ceil) … 制約を緩める方向 → 実行不能を避ける
+    //   ・必要数/人員要件: 切り捨て(floor) … 過剰要求を避ける方向 → 実行不能を避ける
+    // どの値に端数があったかは console.warn で可視化し、原因（設定値/集計結果）を特定できるようにする。
+    const coerceLog: string[] = [];
+    const asInt = (val: any, dir: 'floor' | 'ceil', label: string, fallback: number): number => {
+      const n = Number(val);
+      if (!Number.isFinite(n)) {
+        coerceLog.push(`${label}: 非数値(${JSON.stringify(val)}) → フォールバック ${fallback}`);
+        return fallback;
+      }
+      const rounded = dir === 'floor' ? Math.floor(n) : Math.ceil(n);
+      if (rounded !== n) coerceLog.push(`${label}: ${n} → ${rounded} (${dir})`);
+      return rounded;
+    };
+
     const generationNurses = activeNurses.filter(n => !nurseShiftPrefs[n.id]?.excludeFromGeneration);
 
     const nurseData = generationNurses.map(n => {
@@ -1580,7 +1597,8 @@ const WardScheduleSystem = () => {
         position: n.position,
         noNightShift: pr.noNightShift || false,
         noDayShift: pr.noDayShift || false,
-        maxNightShifts: pr.maxNightShifts ?? generateConfig.maxNightShifts,
+        // 個人の夜勤上限（上限値）→ 切り上げ
+        maxNightShifts: asInt(pr.maxNightShifts ?? generateConfig.maxNightShifts, 'ceil', `nurse[${n.id}].maxNightShifts`, 6),
         excludeFromGeneration: false,
         team: (n as any).team ?? null,  // フェーズ3: /solve_team で参照される (既存 /solve は無視)
       };
@@ -1611,28 +1629,37 @@ const WardScheduleSystem = () => {
       );
     }
 
-    return {
+    const request = {
       nurses: nurseData,
-      daysInMonth,
+      daysInMonth: asInt(daysInMonth, 'floor', 'daysInMonth', 30),
       year: targetYear,
       month: targetMonth,
       config: {
-        weekdayDayStaff: generateConfig.weekdayDayStaff,
-        weekendDayStaff: generateConfig.weekendDayStaff,
-        nightShiftPattern: generateConfig.nightShiftPattern,
-        maxNightShifts: generateConfig.maxNightShifts,
-        maxDaysOff: generateConfig.maxDaysOff,
-        maxConsecutiveDays: generateConfig.maxConsecutiveDays,
-        maxDoubleNightPairs: (generateConfig as any).maxDoubleNightPairs ?? 2,
+        // 人員要件（必要人数）→ 切り捨て（過剰要求を避ける）
+        weekdayDayStaff: asInt(generateConfig.weekdayDayStaff, 'floor', 'weekdayDayStaff', 6),
+        weekendDayStaff: asInt(generateConfig.weekendDayStaff, 'floor', 'weekendDayStaff', 5),
+        nightShiftPattern: (generateConfig.nightShiftPattern || []).map((v: any, i: number) => asInt(v, 'floor', `nightShiftPattern[${i}]`, 4)),
+        // 上限値 → 切り上げ（制約を緩める方向で実行不能を避ける）
+        maxNightShifts: asInt(generateConfig.maxNightShifts, 'ceil', 'maxNightShifts', 6),
+        maxDaysOff: asInt(generateConfig.maxDaysOff, 'ceil', 'maxDaysOff', 10),
+        maxConsecutiveDays: asInt(generateConfig.maxConsecutiveDays, 'ceil', 'maxConsecutiveDays', 3),
+        maxDoubleNightPairs: asInt((generateConfig as any).maxDoubleNightPairs ?? 2, 'ceil', 'maxDoubleNightPairs', 2),
         excludeMgmtFromNightCount: generateConfig.excludeMgmtFromNightCount,
       },
       requests: requestData,
-      nightNgPairs: nightNgPairs.map(([a, b]) => [a, b]),
+      nightNgPairs: nightNgPairs.map(([a, b]) => [asInt(a, 'floor', 'nightNgPair.a', 0), asInt(b, 'floor', 'nightNgPair.b', 0)]),
       prevMonthConstraints: cleansedPrevMonth,
-      holidays: holidays.map(h => h - 1),
-      weekends,
+      holidays: holidays.map(h => asInt(h - 1, 'floor', 'holiday', 0)),
+      weekends: weekends.map(w => asInt(w, 'floor', 'weekend', 0)),
       numPatterns: 3,
     };
+
+    // 端数を検出・整数化した場合は原因特定のため警告を出す（本番運用でもコンソールで追える）
+    if (coerceLog.length > 0) {
+      console.warn('[buildSolverRequest] ソルバー送信前に非整数値を整数化しました（値の出所を確認してください）:\n' + coerceLog.join('\n'));
+    }
+
+    return request;
   };
 
   // 勤務表自動生成（マルチフェーズ制約最適化 + 焼きなまし法）
