@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Calendar, CalendarDays, Settings, Moon, Sun, Clock, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, LogOut, Lock, Download, Upload, Edit2, Save, X, Eye, Users, FileSpreadsheet, Activity, Maximize2, Minimize2, ChevronUp, ChevronDown, RotateCcw, History, BarChart3, UserX, List, Shield } from 'lucide-react';
+import { Calendar, CalendarDays, Settings, Moon, Sun, Clock, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, LogOut, Lock, Download, Upload, Edit2, Save, X, Eye, Users, FileSpreadsheet, Activity, Maximize2, Minimize2, ChevronUp, ChevronDown, RotateCcw, History, BarChart3, UserX, List, Shield, GripVertical } from 'lucide-react';
 import * as XLSX from 'xlsx-js-style';
 import { supabase } from './lib/supabase';
 import { validateRequests, buildConflictMap, RequestConflict } from './utils/validateRequests';
@@ -346,6 +346,9 @@ const WardScheduleSystem = () => {
   const [showAccessCodes, setShowAccessCodes] = useState(false);
   const [editingNurse, setEditingNurse] = useState(null);
   const [showAddNurse, setShowAddNurse] = useState(false);
+  // ドラッグ&ドロップ並び替え用（表示のみの一時状態。DB構造には影響しない）
+  const [draggingNurseId, setDraggingNurseId] = useState<number | null>(null); // ドラッグ中の行
+  const [dragOverNurseId, setDragOverNurseId] = useState<number | null>(null); // ドロップ先ハイライト対象
   const [newNurseData, setNewNurseData] = useState({ name: '', position: '一般' });
   const [editingCell, setEditingCell] = useState<{ nurseId: number; dayIndex: number; x: number; y: number } | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -1118,6 +1121,31 @@ const WardScheduleSystem = () => {
     ));
     await upsertNurseToDB({ ...current, display_order: newCurrentOrder });
     await upsertNurseToDB({ ...swap, display_order: newSwapOrder });
+  };
+
+  // ドラッグ&ドロップで draggedId を targetId の位置へ移動する。
+  // 保存は上下矢印(moveNurse)と同じ upsertNurseToDB を再利用し、
+  // 並び替え後に display_order を 0,1,2... の連番へ振り直す（変更行のみ保存）。
+  const reorderNurse = async (draggedId: number, targetId: number) => {
+    if (draggedId === targetId) return;
+    const sorted = [...nurses].filter(n => n.active).sort((a, b) => (a.display_order || 0) - (b.display_order || 0) || a.id - b.id);
+    const fromIdx = sorted.findIndex(n => n.id === draggedId);
+    const toIdx = sorted.findIndex(n => n.id === targetId);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const reordered = [...sorted];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+    // 新しい並び順に沿って display_order を 0,1,2... へ再割り当てし、実際に変わった行だけ保存する
+    const changed = reordered
+      .map((nurse, i) => ({ nurse, newOrder: i }))
+      .filter(({ nurse, newOrder }) => (nurse.display_order ?? -1) !== newOrder)
+      .map(({ nurse, newOrder }) => ({ ...nurse, display_order: newOrder }));
+    if (changed.length === 0) return;
+    const byId = new Map<number, any>(changed.map(n => [n.id, n]));
+    setNurses(prev => prev.map(n => byId.get(n.id) || n));
+    for (const n of changed) {
+      await upsertNurseToDB(n);
+    }
   };
 
   const resetDisplayOrder = async () => {
@@ -3828,15 +3856,27 @@ const WardScheduleSystem = () => {
                   </thead>
                   <tbody>
                     {activeNurses.map((nurse, idx) => (
-                      <tr key={nurse.id} className="hover:bg-gray-50">
+                      <tr
+                        key={nurse.id}
+                        draggable={editingNurse !== nurse.id}
+                        onDragStart={(e) => { setDraggingNurseId(nurse.id); e.dataTransfer.effectAllowed = 'move'; }}
+                        onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dragOverNurseId !== nurse.id) setDragOverNurseId(nurse.id); }}
+                        onDrop={(e) => { e.preventDefault(); if (draggingNurseId != null) reorderNurse(draggingNurseId, nurse.id); setDraggingNurseId(null); setDragOverNurseId(null); }}
+                        onDragEnd={() => { setDraggingNurseId(null); setDragOverNurseId(null); }}
+                        className={`transition-colors ${draggingNurseId === nurse.id ? 'opacity-40' : 'hover:bg-gray-50'} ${dragOverNurseId === nurse.id && draggingNurseId !== nurse.id ? 'bg-blue-100 shadow-[inset_0_2px_0_0_#3b82f6]' : ''}`}
+                      >
                         <td className="border p-1 text-center">
-                          <div className="flex gap-0.5 justify-center">
-                            <button onClick={() => moveNurse(nurse.id, 'up')} disabled={idx === 0} className="p-1 text-xs rounded hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">
-                              <ChevronUp size={14} />
-                            </button>
-                            <button onClick={() => moveNurse(nurse.id, 'down')} disabled={idx === activeNurses.length - 1} className="p-1 text-xs rounded hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">
-                              <ChevronDown size={14} />
-                            </button>
+                          <div className="flex items-center gap-1 justify-center">
+                            <GripVertical size={14} className="text-gray-400 cursor-grab active:cursor-grabbing shrink-0" aria-label="ドラッグして並び替え" />
+                            <span className="text-gray-400 text-xs tabular-nums w-5 text-right">{idx + 1}</span>
+                            <div className="flex gap-0.5">
+                              <button onClick={() => moveNurse(nurse.id, 'up')} disabled={idx === 0} className="p-1 text-xs rounded hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">
+                                <ChevronUp size={14} />
+                              </button>
+                              <button onClick={() => moveNurse(nurse.id, 'down')} disabled={idx === activeNurses.length - 1} className="p-1 text-xs rounded hover:bg-gray-200 disabled:opacity-30 disabled:cursor-not-allowed">
+                                <ChevronDown size={14} />
+                              </button>
+                            </div>
                           </div>
                         </td>
                         <td className="border p-2">
@@ -5671,7 +5711,7 @@ const WardScheduleSystem = () => {
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {activeNurses.map(nurse => (
+              {activeNurses.map((nurse, idx) => (
                 <div
                   key={nurse.id}
                   className="flex items-center justify-between bg-gray-50 hover:bg-gray-100 p-3 rounded-xl transition-colors"
@@ -5722,6 +5762,7 @@ const WardScheduleSystem = () => {
                   ) : (
                     <>
                       <div className="flex items-center gap-3">
+                        <span className="text-gray-400 text-xs tabular-nums w-6 text-right">{idx + 1}</span>
                         <span className={`text-xs px-2 py-1 rounded-lg border ${POSITIONS[nurse.position]?.color}`}>
                           {nurse.position}
                         </span>
