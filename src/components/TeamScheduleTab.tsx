@@ -6,7 +6,7 @@
  *
  * 既存の自動生成タブ・既存ロジックには一切干渉しない (本コンポーネント単体で完結)。
  */
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Users, Sparkles, X, RefreshCw, Save, FolderOpen, Trash2, Star, ChevronDown, ChevronRight } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
@@ -47,9 +47,18 @@ interface TeamMetrics {
   fallbackLevel?: number;
   attemptsTeam?: Array<{ relaxTeam: number; status: string; elapsedSec: number }>;
   perDayTeamBalance?: PerDayBalance[];
-  balanceRate?: number;
+  balanceRate?: number;          // 既存 (= strictBalanceRate)
   balancedDays?: number;
   totalDays?: number;
+  // 新指標 (容量考慮型バランス)
+  strictBalanceRate?: number;
+  achievableBalanceRate?: number;
+  teamCoverageRate?: number;
+  dayDiversityScore?: number;
+  recommendedRate?: number;
+  teamCapacity?: Record<string, number>;
+  teamActualDays?: Record<string, number>;
+  teamExpectedDays?: Record<string, number>;
   diagnostics?: {
     teamMode?: boolean;
     requiredTeams?: string[];
@@ -334,53 +343,144 @@ const feasibilityLabel = (f: string | undefined): string => {
   return f ?? '不明';
 };
 
-/** 100% 達成不可能時の改善提案を表示するパネル */
+// ──────────────────────────────────────
+// 新指標 UI ヘルパー
+// ──────────────────────────────────────
+const recommendedRateColorClass = (rate: number): string => {
+  if (rate >= 0.8) return 'text-green-600';
+  if (rate >= 0.6) return 'text-yellow-600';
+  if (rate >= 0.3) return 'text-orange-600';
+  return 'text-red-600';
+};
+
+const recommendedRateBorderClass = (rate: number): string => {
+  if (rate >= 0.8) return 'border-green-400 bg-green-50/30';
+  if (rate >= 0.6) return 'border-yellow-400 bg-yellow-50/30';
+  if (rate >= 0.3) return 'border-orange-400 bg-orange-50/30';
+  return 'border-red-400 bg-red-50/30';
+};
+
+const METRIC_TOOLTIPS = {
+  recommendedRate: '各日の夜勤に何種類のチームが出ているかの平均的な多様性。UI のメイン表示指標。',
+  achievableBalanceRate: '各チームの月内夜勤容量を考慮した実質的な達成度。容量上限まで頑張ったかを評価。',
+  teamCoverageRate: '月内に少なくとも1回夜勤を出したチームの割合。',
+  strictBalanceRate: '全チームから各日1名ずつ揃った日の割合 (参考値)。チーム容量が小さいと達成困難。',
+} as const;
+
+/** 指標名 + (?) アイコンのセット */
+const MetricLabel: React.FC<{ label: string; tip: string }> = ({ label, tip }) => (
+  <span className="inline-flex items-center gap-1">
+    {label}
+    <span
+      title={tip}
+      className="inline-flex items-center justify-center w-3.5 h-3.5 text-[10px] font-bold text-gray-500 bg-gray-200 hover:bg-gray-300 rounded-full cursor-help"
+      role="img"
+      aria-label={tip}
+    >?</span>
+  </span>
+);
+
+/** 100% 達成不可能時の改善提案を表示するパネル
+ *  recommendedRate に応じて見せ方を変える:
+ *    >= 0.8  : 「✓ 良好な配分です」と緑色で表示。提案は折りたたみ
+ *    0.6-0.8 : 既存の青枠でそのまま表示
+ *    <  0.6  : 赤枠で強調表示
+ */
 function ImprovementSuggestionsPanel({ teamMetrics }: { teamMetrics?: TeamMetrics | null }) {
   const sugs = teamMetrics?.improvementSuggestions ?? [];
   const feasibility = teamMetrics?.feasibility;
-  if (!sugs || sugs.length === 0) return null;
   const currentMaxRate = feasibility?.currentMaxRate;
   const currentMaxPct = typeof currentMaxRate === 'number' ? (currentMaxRate * 100).toFixed(0) : null;
+
+  // recommendedRate 取得 (フロント側で再評価)
+  const recommendedRate = typeof teamMetrics?.recommendedRate === 'number'
+    ? teamMetrics.recommendedRate
+    : (typeof teamMetrics?.balanceRate === 'number' ? teamMetrics.balanceRate : 0);
+
+  const [expanded, setExpanded] = useState(recommendedRate < 0.8);
+
+  if (!sugs || sugs.length === 0) {
+    // 提案が無くても「良好」表示は出す
+    if (recommendedRate >= 0.8) {
+      return (
+        <div className="bg-green-50 border border-green-200 rounded-xl p-3 mt-3 mb-4 text-sm text-green-800 font-bold">
+          ✓ 良好な配分です
+        </div>
+      );
+    }
+    return null;
+  }
+
+  // recommendedRate に応じて枠色を決定
+  let frameCls = 'bg-blue-50 border-blue-200';
+  let headerCls = 'text-blue-900';
+  let descCls = 'text-blue-800';
+  if (recommendedRate >= 0.8) {
+    frameCls = 'bg-green-50 border-green-200';
+    headerCls = 'text-green-900';
+    descCls = 'text-green-800';
+  } else if (recommendedRate < 0.6) {
+    frameCls = 'bg-red-50 border-red-400 border-2';
+    headerCls = 'text-red-900';
+    descCls = 'text-red-800';
+  }
+
   return (
-    <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mt-3 mb-4">
-      <h4 className="font-bold text-blue-900 mb-2 flex items-center gap-2">
-        💡 100% 達成のための改善提案
-      </h4>
-      <p className="text-sm text-blue-800 mb-3">
-        {currentMaxPct != null
-          ? <>現在の数学的上限: <strong>{currentMaxPct}%</strong>。以下のいずれかの設定変更で改善できます:</>
-          : <>以下のいずれかの設定変更で改善できる可能性があります:</>}
-      </p>
-      <ol className="space-y-3">
-        {sugs.map((s, i) => (
-          <li key={i} className="flex gap-2">
-            <span className="font-bold text-blue-700 shrink-0">{String.fromCharCode(65 + i)}.</span>
-            <div className="min-w-0 flex-1">
-              <p className="font-semibold text-gray-900">{s.title}</p>
-              <p className="text-sm text-gray-700 break-words">{s.description}</p>
-              {s.targetNurses && s.targetNurses.length > 0 && (
-                <p className="text-xs text-gray-600 mt-1">
-                  対象: {s.targetNurses.join('、')}
-                </p>
-              )}
-              {typeof s.expectedCapacity === 'number' && typeof s.currentCapacity === 'number' && (
-                <p className="text-xs text-gray-600 mt-0.5">
-                  容量: {s.currentCapacity} → <strong>{s.expectedCapacity}</strong>
-                  {typeof s.expectedDemand === 'number' && (
-                    <span className="text-gray-500"> (必要 {s.expectedDemand}、{s.expectedCapacity >= s.expectedDemand ? '✅ 達成' : '⚠️ 不足'})</span>
+    <div className={`${frameCls} border rounded-xl p-4 mt-3 mb-4`}>
+      {recommendedRate >= 0.8 ? (
+        <button
+          type="button"
+          onClick={() => setExpanded(v => !v)}
+          className={`w-full text-left font-bold ${headerCls} flex items-center justify-between`}
+        >
+          <span>✓ 良好な配分です ({(recommendedRate * 100).toFixed(0)}%)</span>
+          <span className="text-xs font-normal">{expanded ? '▲ 改善提案を閉じる' : '▼ さらに改善するには'}</span>
+        </button>
+      ) : (
+        <h4 className={`font-bold mb-2 flex items-center gap-2 ${headerCls}`}>
+          {recommendedRate < 0.6 ? '⚠️' : '💡'} 改善提案
+        </h4>
+      )}
+
+      {expanded && (
+        <>
+          <p className={`text-sm mb-3 mt-2 ${descCls}`}>
+            {currentMaxPct != null
+              ? <>現在の数学的上限: <strong>{currentMaxPct}%</strong>。以下のいずれかの設定変更で改善できます:</>
+              : <>以下のいずれかの設定変更で改善できる可能性があります:</>}
+          </p>
+          <ol className="space-y-3">
+            {sugs.map((s, i) => (
+              <li key={i} className="flex gap-2">
+                <span className={`font-bold shrink-0 ${headerCls}`}>{String.fromCharCode(65 + i)}.</span>
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold text-gray-900">{s.title}</p>
+                  <p className="text-sm text-gray-700 break-words">{s.description}</p>
+                  {s.targetNurses && s.targetNurses.length > 0 && (
+                    <p className="text-xs text-gray-600 mt-1">
+                      対象: {s.targetNurses.join('、')}
+                    </p>
                   )}
-                </p>
-              )}
-              <p className="text-xs text-blue-600 mt-1">
-                実施容易さ: {feasibilityLabel(s.feasibility)}
-              </p>
-            </div>
-          </li>
-        ))}
-      </ol>
-      <p className="text-xs text-gray-500 mt-3">
-        ※ 設定変更後、ナース管理画面で対応するナースを編集してから再生成してください。
-      </p>
+                  {typeof s.expectedCapacity === 'number' && typeof s.currentCapacity === 'number' && (
+                    <p className="text-xs text-gray-600 mt-0.5">
+                      容量: {s.currentCapacity} → <strong>{s.expectedCapacity}</strong>
+                      {typeof s.expectedDemand === 'number' && (
+                        <span className="text-gray-500"> (必要 {s.expectedDemand}、{s.expectedCapacity >= s.expectedDemand ? '✅ 達成' : '⚠️ 不足'})</span>
+                      )}
+                    </p>
+                  )}
+                  <p className={`text-xs mt-1 ${descCls}`}>
+                    実施容易さ: {feasibilityLabel(s.feasibility)}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ol>
+          <p className="text-xs text-gray-500 mt-3">
+            ※ 設定変更後、ナース管理画面で対応するナースを編集してから再生成してください。
+          </p>
+        </>
+      )}
     </div>
   );
 }
@@ -402,6 +502,8 @@ export default function TeamScheduleTab({
   const daysInMonth = new Date(targetYear, targetMonth + 1, 0).getDate();
   const [teamPatterns, setTeamPatterns] = useState<TeamPattern[]>([]);
   const [showTeamDetail, setShowTeamDetail] = useState<boolean[]>([]);
+  // 新指標: チーム別内訳パネル
+  const [showTeamBreakdown, setShowTeamBreakdown] = useState<boolean[]>([]);
   const [showUnassignedDetail, setShowUnassignedDetail] = useState(false);
   const [loading, setLoading] = useState(false);
   const [generatingPhase, setGeneratingPhase] = useState('');
@@ -487,6 +589,7 @@ export default function TeamScheduleTab({
     setGeneratingPhase('AI最適化サーバーに接続中...');
     setTeamPatterns([]);
     setShowTeamDetail([]);
+    setShowTeamBreakdown([]);
     try {
       const reqBody = buildRequest();
       // DEBUG: 送信内容を可視化 (フェーズ3問題切り分け用)
@@ -541,6 +644,7 @@ export default function TeamScheduleTab({
       const patterns: TeamPattern[] = data.patterns || [];
       setTeamPatterns(patterns);
       setShowTeamDetail(patterns.map(() => false));
+      setShowTeamBreakdown(patterns.map(() => false));
     } catch (e: any) {
       console.error('[solve_team] error:', e);
       alert(`生成エラー: ${e?.message ?? '不明'}`);
@@ -942,8 +1046,22 @@ export default function TeamScheduleTab({
                   const perDay = tm.perDayTeamBalance ?? [];
                   const usedTeams = tm.usedTeams ?? [];
                   const hasError = !pat.data || Object.keys(pat.data).length === 0;
-                  const ratePct = (balanceRate * 100).toFixed(0);
                   const m: any = pat.metrics ?? {};
+
+                  // 新指標 (容量考慮型バランス) — recommendedRate がなければ旧 balanceRate にフォールバック
+                  const recommendedRate = typeof tm.recommendedRate === 'number' ? tm.recommendedRate : balanceRate;
+                  const achievableRate = typeof tm.achievableBalanceRate === 'number' ? tm.achievableBalanceRate : balanceRate;
+                  const coverageRate = typeof tm.teamCoverageRate === 'number' ? tm.teamCoverageRate : 1;
+                  const strictRate = typeof tm.strictBalanceRate === 'number' ? tm.strictBalanceRate : balanceRate;
+                  const teamCapacity = tm.teamCapacity ?? {};
+                  const teamActualDays = tm.teamActualDays ?? {};
+                  const teamExpectedDays = tm.teamExpectedDays ?? {};
+
+                  const recommendedPct = (recommendedRate * 100).toFixed(0);
+                  const achievablePct = (achievableRate * 100).toFixed(0);
+                  const coveragePct = (coverageRate * 100).toFixed(0);
+                  const strictPct = (strictRate * 100).toFixed(0);
+
                   // 緩和レベル/フォールバック状態のバッジ
                   let statusBadge: { text: string; cls: string } | null = null;
                   if (m.fallbackMode === 'error') {
@@ -956,14 +1074,17 @@ export default function TeamScheduleTab({
                     else if (m.relaxLevel === 3 || m.relaxLevel === 4) statusBadge = { text: '⚠️ 大幅緩和', cls: 'bg-orange-100 text-orange-700' };
                   }
 
+                  // 容量不足チームの検出 (内訳パネルの注釈用)
+                  const shortageTeams: string[] = usedTeams.filter(t => {
+                    const cap = teamCapacity[t] ?? 0;
+                    return cap > 0 && cap < totalDays;
+                  });
+
                   return (
                     <div
                       key={idx}
                       className={`border-2 rounded-xl p-4 ${
-                        hasError ? 'border-red-300 bg-red-50/40'
-                        : balanceRate >= 0.8 ? 'border-green-400 bg-green-50/30'
-                        : balanceRate >= 0.5 ? 'border-yellow-400 bg-yellow-50/30'
-                        : 'border-orange-400 bg-orange-50/30'
+                        hasError ? 'border-red-300 bg-red-50/40' : recommendedRateBorderClass(recommendedRate)
                       }`}
                     >
                       {statusBadge && (
@@ -988,14 +1109,44 @@ export default function TeamScheduleTab({
                         </div>
                       ) : (
                         <>
-                          <div className="space-y-1 text-sm mb-2">
+                          {/* メイン指標: チーム配分スコア (recommendedRate) を大きく表示 */}
+                          <div className="mb-3 bg-white/60 rounded-lg p-3">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-xs text-gray-600">
+                                <MetricLabel label="チーム配分スコア" tip={METRIC_TOOLTIPS.recommendedRate} />
+                              </span>
+                            </div>
+                            <div className={`text-3xl font-bold ${recommendedRateColorClass(recommendedRate)}`}>
+                              {recommendedPct}%
+                            </div>
+                          </div>
+
+                          {/* 副表示: 達成可能上限 / チーム被覆 / 厳密判定 */}
+                          <div className="space-y-1 text-xs mb-2">
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">
+                                <MetricLabel label="達成可能上限" tip={METRIC_TOOLTIPS.achievableBalanceRate} />
+                              </span>
+                              <span className="font-bold text-gray-800">{achievablePct}%</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">
+                                <MetricLabel label="チーム被覆" tip={METRIC_TOOLTIPS.teamCoverageRate} />
+                              </span>
+                              <span className="font-bold text-gray-800">{coveragePct}%</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-gray-500">
+                                <MetricLabel label="厳密判定" tip={METRIC_TOOLTIPS.strictBalanceRate} />
+                              </span>
+                              <span className="text-gray-500">{strictPct}% ({balancedDays}/{totalDays}日)</span>
+                            </div>
+                          </div>
+
+                          <div className="border-t pt-2 mb-2 space-y-1 text-sm">
                             <div className="flex justify-between">
                               <span className="text-gray-600">スコア</span>
                               <span className="font-bold">{pat.score?.toLocaleString?.() ?? pat.score}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-gray-600">バランス達成率</span>
-                              <span className="font-bold">{ratePct}% ({balancedDays}/{totalDays}日)</span>
                             </div>
                             <div className="flex justify-between">
                               <span className="text-gray-600">配分レベル</span>
@@ -1016,16 +1167,65 @@ export default function TeamScheduleTab({
                             )}
                           </div>
 
+                          {/* 内訳パネル (チーム別 容量/期待/実績/達成率) */}
+                          <button
+                            onClick={() => setShowTeamBreakdown(prev => prev.map((v, i) => i === idx ? !v : v))}
+                            className="w-full text-xs px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-gray-700 mb-2"
+                          >
+                            {showTeamBreakdown[idx] ? '▲ チーム別内訳を閉じる' : '▼ チーム別内訳を表示'}
+                          </button>
+
+                          {showTeamBreakdown[idx] && (
+                            <div className="text-xs mb-3 bg-white/70 rounded p-2">
+                              <table className="w-full border-collapse">
+                                <thead>
+                                  <tr className="border-b">
+                                    <th className="text-left py-1">チーム</th>
+                                    <th className="text-right py-1">容量</th>
+                                    <th className="text-right py-1">期待</th>
+                                    <th className="text-right py-1">実績</th>
+                                    <th className="text-right py-1">達成率</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {usedTeams.map(t => {
+                                    const cap = teamCapacity[t] ?? 0;
+                                    const exp = teamExpectedDays[t] ?? 0;
+                                    const act = teamActualDays[t] ?? 0;
+                                    const ratio = exp > 0 ? (act / exp) * 100 : 100;
+                                    const ratioCls = ratio >= 95 ? 'text-green-700' : ratio >= 75 ? 'text-yellow-700' : 'text-red-700';
+                                    return (
+                                      <tr key={t} className="border-b border-gray-100">
+                                        <td className="py-1">
+                                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${TEAM_BG_COLORS[t] ?? 'bg-gray-100'}`}>{t}</span>
+                                        </td>
+                                        <td className="text-right py-1">{cap}</td>
+                                        <td className="text-right py-1">{exp}</td>
+                                        <td className="text-right py-1">{act}</td>
+                                        <td className={`text-right py-1 font-bold ${ratioCls}`}>{ratio.toFixed(0)}%</td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                              <p className="mt-2 text-[11px] text-gray-600">
+                                {shortageTeams.length > 0
+                                  ? `※ チーム${shortageTeams.join('・')}の容量不足により、全日${usedTeams.length}チーム揃いは数学的に困難です。`
+                                  : '※ 各チームから可能な限り夜勤を出せています。'}
+                              </p>
+                            </div>
+                          )}
+
                           <button
                             onClick={() => setShowTeamDetail(prev => prev.map((v, i) => i === idx ? !v : v))}
                             className="w-full text-xs px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-gray-700 mb-2"
                           >
-                            {showTeamDetail[idx] ? '▲ バランス詳細を閉じる' : '▼ バランス詳細を表示'}
+                            {showTeamDetail[idx] ? '▲ 不均衡な日を閉じる' : '▼ 不均衡な日を表示'}
                           </button>
 
                           {showTeamDetail[idx] && (
                             <div className="text-xs space-y-1 mb-3 max-h-48 overflow-y-auto bg-white/70 rounded p-2">
-                              <p className="font-bold text-gray-700 mb-1">不均衡な日:</p>
+                              <p className="font-bold text-gray-700 mb-1">不均衡な日 (厳密判定基準):</p>
                               {perDay.filter(d => !d.isBalanced).length === 0 ? (
                                 <p className="text-green-700">✅ 全日均衡</p>
                               ) : (
