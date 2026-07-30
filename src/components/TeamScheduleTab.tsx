@@ -9,6 +9,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Users, Sparkles, X, RefreshCw, Save, FolderOpen, Trash2, Star, ChevronDown, ChevronRight } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { getJapaneseHolidays } from '../utils/holidays';
 
 interface NurseLite {
   id: number | string;
@@ -117,34 +118,7 @@ const getDayOfWeekJa = (year: number, month: number, day: number): string => {
   return ['日', '月', '火', '水', '木', '金', '土'][d.getDay()];
 };
 
-const getJapaneseHolidaysJa = (year: number, month: number): number[] => {
-  const holidays: number[] = [];
-  const m = month + 1;
-  if (m === 1) { holidays.push(1); holidays.push(11); }
-  if (m === 2) holidays.push(23);
-  if (m === 3) holidays.push(21);
-  if (m === 4) holidays.push(29);
-  if (m === 5) { holidays.push(3); holidays.push(4); holidays.push(5); }
-  if (m === 7) holidays.push(20);
-  if (m === 8) holidays.push(11);
-  if (m === 9) { holidays.push(16); holidays.push(23); }
-  if (m === 10) holidays.push(14);
-  if (m === 11) { holidays.push(3); holidays.push(23); }
-  const getNthMonday = (y: number, mo: number, n: number): number => {
-    let count = 0;
-    for (let d = 1; d <= 31; d++) {
-      const date = new Date(y, mo, d);
-      if (date.getMonth() !== mo) break;
-      if (date.getDay() === 1) { count++; if (count === n) return d; }
-    }
-    return -1;
-  };
-  if (m === 1) { const d = getNthMonday(year, month, 2); if (d > 0) holidays.push(d); }
-  if (m === 7) { const d = getNthMonday(year, month, 3); if (d > 0) holidays.push(d); }
-  if (m === 9) { const d = getNthMonday(year, month, 3); if (d > 0) holidays.push(d); }
-  if (m === 10) { const d = getNthMonday(year, month, 2); if (d > 0) holidays.push(d); }
-  return Array.from(new Set(holidays)).sort((a, b) => a - b);
-};
+// 祝日判定は src/utils/holidays.ts の共通実装を使う（本体との重複実装を廃止）
 
 // 指定日 (i: 0-based) の夜勤必要数。HcuScheduleSystem の tfoot と同一ロジック。
 const getNightRequiredAt = (
@@ -205,7 +179,7 @@ function renderScheduleTfoot(
   targetMonth: number,
   cfg: GenerateConfigLite,
 ): JSX.Element {
-  const holidays = getJapaneseHolidaysJa(targetYear, targetMonth);
+  const holidays = getJapaneseHolidays(targetYear, targetMonth);
   return (
     <tfoot className="sticky bottom-0 z-20">
       {/* 夜勤人数 (= '夜' のみカウント。'管夜' は除外) */}
