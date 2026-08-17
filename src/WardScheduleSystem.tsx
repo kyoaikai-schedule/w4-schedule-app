@@ -372,6 +372,8 @@ const WardScheduleSystem = () => {
   const [showPrevMonthReview, setShowPrevMonthReview] = useState(false);
   const [prevMonthRawData, setPrevMonthRawData] = useState([]); // Excelから読み込んだ生データ [{name, shifts}]
   const [prevMonthMapping, setPrevMonthMapping] = useState({}); // { nurseId: excelRowIndex } マッピング
+  // CWS等の取込結果レポート（未対応記号・未登録職員・件数）
+  const [prevMonthImportReport, setPrevMonthImportReport] = useState<any>(null);
   
   // バージョン管理
   const [scheduleVersions, setScheduleVersions] = useState<ScheduleVersion[]>([]);
@@ -1241,20 +1243,39 @@ const WardScheduleSystem = () => {
       try {
         const data = new Uint8Array(event.target!.result as ArrayBuffer);
         const workbook = XLSX.read(data, { type: 'array' });
+        // シート名は固定せず先頭シートを使う（CWSは「C1030036_共立4F西」等のコード付き）
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
 
-        // 前月末7日分のデータを抽出（配列形式）
-        const rawData = extractPreviousMonthDataAsArray(jsonData);
-        
-        if (rawData.length > 0) {
-          setPrevMonthRawData(rawData);
-          
-          // 自動マッピングを試みる
-          const autoMapping = createAutoMapping(rawData);
+        // 前月末7日分のデータを抽出（CWS変換ファイルにも対応）
+        const rawResult = extractPreviousMonthDataAsArray(jsonData);
+
+        // ヘッダー未検出などの明示エラー
+        if (rawResult.error) {
+          alert('❌ ' + rawResult.error);
+          return;
+        }
+
+        if (rawResult.rows.length > 0) {
+          setPrevMonthRawData(rawResult.rows);
+
+          // 自動マッピングを試みる（氏名のスペース除去で照合）
+          const autoMapping = createAutoMapping(rawResult.rows);
           setPrevMonthMapping(autoMapping);
-          
+
+          // 取込レポート（未対応記号・未登録職員・件数）を作成
+          const mappedRowIdxs = new Set(Object.values(autoMapping));
+          setPrevMonthImportReport({
+            unmappedSymbols: rawResult.warnings,
+            patternWarnings: rawResult.patternWarnings,
+            unregistered: rawResult.rows
+              .filter((_, i) => !mappedRowIdxs.has(i))
+              .map((r: any) => r.name),
+            totalStaff: rawResult.totalStaff,
+            matchedStaff: mappedRowIdxs.size,
+          });
+
           setShowPrevMonthImport(false);
           setShowPrevMonthReview(true);
         } else {
@@ -1269,33 +1290,46 @@ const WardScheduleSystem = () => {
     e.target.value = '';
   };
 
-  // 自動マッピングを作成（名前の類似度で紐付け）
+  // 自動マッピングを作成（氏名で紐付け）
+  // パス1: スペース除去の完全一致 → パス2: 類似度(>0.5)で補完。
+  // 位置（行番号順）フォールバックは誤マッピングの原因になるため行わない。
+  // どの行にも紐付かなかった職員は未設定のまま（レビュー画面で手動選択可能）。
   const createAutoMapping = (rawData) => {
     const mapping = {};
-    
-    activeNurses.forEach((nurse, nurseIndex) => {
-      // まず名前でマッチを試みる
+    const usedRows = new Set<number>();
+
+    const stripName = (n: any) => normalizeName(n).replace(/\s/g, '');
+
+    // パス1: 完全一致（各Excel行は1職員にのみ割り当て）
+    activeNurses.forEach(nurse => {
+      const target = stripName(nurse.name);
+      if (!target) return;
+      const idx = rawData.findIndex((row, i) => !usedRows.has(i) && stripName(row.name) === target);
+      if (idx !== -1) {
+        mapping[nurse.id] = idx;
+        usedRows.add(idx);
+      }
+    });
+
+    // パス2: 残りは類似度で補完（0.5超のみ、誤爆防止）
+    activeNurses.forEach(nurse => {
+      if (mapping[nurse.id] !== undefined) return;
       let bestMatch = -1;
-      let bestScore = 0;
-      
+      let bestScore = 0.5;
       rawData.forEach((row, rowIndex) => {
+        if (usedRows.has(rowIndex)) return;
         const score = calculateNameSimilarity(nurse.name, row.name);
-        if (score > bestScore && score > 0.3) { // 30%以上の類似度
+        if (score > bestScore) {
           bestScore = score;
           bestMatch = rowIndex;
         }
       });
-      
-      // マッチが見つからない場合、行番号順で割り当て
-      if (bestMatch === -1 && nurseIndex < rawData.length) {
-        bestMatch = nurseIndex;
-      }
-      
       if (bestMatch !== -1) {
         mapping[nurse.id] = bestMatch;
+        usedRows.add(bestMatch);
       }
     });
-    
+
     return mapping;
   };
 
@@ -1375,8 +1409,9 @@ const WardScheduleSystem = () => {
     // プレビュー状態をクリア
     setPrevMonthRawData([]);
     setPrevMonthMapping({});
+    setPrevMonthImportReport(null);
     setShowPrevMonthReview(false);
-    
+
     alert('✅ 前月データを確定しました。\n既存の勤務表は消去されました。\n希望一覧・勤務表画面に前月制約が反映されています。\n「自動生成」で新しい勤務表を作成してください。');
   };
 
@@ -1384,74 +1419,109 @@ const WardScheduleSystem = () => {
   const cancelPreviousMonthPreview = () => {
     setPrevMonthRawData([]);
     setPrevMonthMapping({});
+    setPrevMonthImportReport(null);
     setShowPrevMonthReview(false);
   };
 
-  // 前月末7日分のデータを配列として抽出
-  const extractPreviousMonthDataAsArray = (jsonData) => {
-    const result = [];
-    
-    if (jsonData.length < 2) return result;
-    
-    // ヘッダー行と列構造を検出
-    let headerRowIndex = 0;
-    let nameColIndex = 1; // デフォルトは列B
-    let dataStartCol = 2; // デフォルトは列C
-    let dataEndCol = -1;
-    
-    // 最初の10行からヘッダー行を探す
-    for (let i = 0; i < Math.min(10, jsonData.length); i++) {
-      const row = jsonData[i];
-      if (!row || row.length < 3) continue;
-      
-      for (let j = 0; j < row.length; j++) {
-        const cell = String(row[j] || '').trim().toLowerCase();
-        
-        // 氏名列を探す
-        if (cell === 'name' || cell.includes('氏名') || cell.includes('名前') || 
-            cell === 'スタッフ' || cell === '看護師' || cell === '職員') {
-          nameColIndex = j;
-          headerRowIndex = i;
+  // 日付ヘッダー行を検出：「1, 2, 3...」と連続する整数が並ぶ列を探す。
+  // 見つかれば [{col, day}] の配列（列位置は決め打ちしない）、無ければ空配列。
+  const detectDateHeaderRun = (row) => {
+    if (!row) return [];
+    const ints = row.map((c) => {
+      const s = String(c ?? '').trim();
+      return /^\d+$/.test(s) ? parseInt(s, 10) : null;
+    });
+    for (let j = 0; j < ints.length; j++) {
+      if (ints[j] === 1) {
+        const run = [{ col: j, day: 1 }];
+        let expected = 2;
+        let k = j + 1;
+        while (k < ints.length && ints[k] === expected) {
+          run.push({ col: k, day: expected });
+          expected++;
+          k++;
         }
-        
-        // 日付列を探す（Excelシリアル値）
-        const numVal = Number(row[j]);
-        if (!isNaN(numVal) && numVal > 43000 && numVal < 50000) {
-          if (dataStartCol === 2 || j < dataStartCol) dataStartCol = j;
-          dataEndCol = Math.max(dataEndCol, j);
-        }
+        // 15日以上の連続並びのみ日付ヘッダーと判定（職員番号等の誤検出防止）
+        if (run.length >= 15) return run;
       }
     }
-    
-    if (dataEndCol === -1) {
-      dataEndCol = jsonData[0] ? jsonData[0].length - 1 : 31;
+    return [];
+  };
+
+  // 前月末7日分のデータを抽出（CWS変換ファイル対応）。
+  // 戻り値: { rows:[{name,empNo,shifts,rowIndex}], warnings:[{name,day,symbol}], patternWarnings:[{name,day,symbol,detail}], totalStaff, error }
+  const extractPreviousMonthDataAsArray = (jsonData) => {
+    const empty = { rows: [], warnings: [], patternWarnings: [], totalStaff: 0, error: null as string | null };
+    if (!jsonData || jsonData.length < 2) {
+      return { ...empty, error: 'ファイルにデータがありません。' };
     }
-    
-    // データ行を処理
+
+    // 1. ヘッダー行の自動検出（1〜15行目を走査。位置は決め打ちしない）
+    let headerRowIndex = -1;
+    let dateCols: { col: number; day: number }[] = [];
+    for (let i = 0; i < Math.min(15, jsonData.length); i++) {
+      const run = detectDateHeaderRun(jsonData[i]);
+      if (run.length >= 15) {
+        headerRowIndex = i;
+        dateCols = run;
+        break;
+      }
+    }
+    if (headerRowIndex === -1) {
+      return { ...empty, error: '日付ヘッダーが見つかりません。「1,2,3...」と続く日付行があるか確認してください。' };
+    }
+
+    const nameCol = 1; // B列（氏名）
+    const empCol = 2;  // C列（職員番号）
+    const rows: any[] = [];
+    const warnings: { name: string; day: number; symbol: string }[] = [];
+    const patternWarnings: { name: string; day: number; symbol: string; detail: string }[] = [];
+    let totalStaff = 0;
+
+    // 2. ヘッダー行より下の全行を走査（空行が来てもスキップして最後まで）
     for (let i = headerRowIndex + 1; i < jsonData.length; i++) {
       const row = jsonData[i];
       if (!row) continue;
-      
-      const name = String(row[nameColIndex] || '').trim();
-      if (!name || name.includes('合計') || name.includes('計') || name === 'ID' || name === 'Name') continue;
-      
-      // 最後の7日分を取得
-      const totalDays = dataEndCol - dataStartCol + 1;
-      const startDay = Math.max(0, totalDays - 7);
-      const shifts = [];
-      
-      for (let d = startDay; d < totalDays; d++) {
-        const colIndex = dataStartCol + d;
-        const shift = String(row[colIndex] || '').trim();
-        shifts.push(normalizeShift(shift));
+
+      // 氏名セルに文字列があること（下部の集計行「看護（深）」等は氏名列が空なので自然に除外）
+      const name = String(row[nameCol] ?? '').trim();
+      if (!name) continue;
+
+      // 日付列範囲に1つ以上の値があること
+      const hasAnyDate = dateCols.some((dc) => String(row[dc.col] ?? '').trim() !== '');
+      if (!hasAnyDate) continue;
+
+      totalStaff++;
+      const empNo = String(row[empCol] ?? '').trim();
+
+      // 末尾7日分を抽出しつつ、未対応記号を警告として記録
+      const startIdx = Math.max(0, dateCols.length - 7);
+      const shifts: string[] = [];
+      for (let d = startIdx; d < dateCols.length; d++) {
+        const dc = dateCols[d];
+        const raw = String(row[dc.col] ?? '').trim();
+        if (raw === '') {
+          shifts.push(''); // 空文字はデータなし
+          continue;
+        }
+        const norm = normalizeShift(raw);
+        if (norm === '') {
+          // マップにない記号：エラーにせず記録し、そのセルは空扱いで続行
+          warnings.push({ name, day: dc.day, symbol: raw });
+          shifts.push('');
+        } else {
+          shifts.push(norm);
+        }
       }
-      
-      if (shifts.some(s => s)) {
-        result.push({ name, shifts, rowIndex: result.length });
-      }
+
+      // 夜勤パターンの整合性チェック（取り込む末尾7日分。末尾＝月末日は自動的に対象外）
+      const winDays = dateCols.slice(startIdx).map((dc) => dc.day);
+      checkNightPatternWarnings(name, shifts, patternWarnings, winDays);
+
+      rows.push({ name, empNo, shifts, rowIndex: rows.length });
     }
-    
-    return result;
+
+    return { rows, warnings, patternWarnings, totalStaff, error: null };
   };
 
   // 確定済みデータから制約を計算（最大2日目まで）
@@ -1505,19 +1575,46 @@ const WardScheduleSystem = () => {
   };
 
   // シフト記号を正規化
+  // CWS記号は内部シフトへ統合: ・→日, 準→夜, 深→明, 管準→管夜, 管深→管明, 公→休, 年→有,
+  //   短1/短4/遅1/遅4→日, ﾊ(半休)/ﾈ(年休)を含む複合記号→休
   const normalizeShift = (shift) => {
     if (!shift) return '';
     const s = String(shift).trim();
-    if (s === '日' || s === '日勤' || s === 'D') return '日';
-    if (s === '夜' || s === '夜勤' || s === 'N') return '夜';
-    if (s === '明' || s === '夜明' || s === '夜勤明' || s === 'A') return '明';
-    if (s === '管夜' || s === '管理夜勤') return '管夜';
-    if (s === '管明' || s === '管理夜明' || s === '管理夜勤明') return '管明';
+    if (s === '日' || s === '日勤' || s === 'D' || s === '・') return '日';
+    if (s === '夜' || s === '夜勤' || s === 'N' || s === '準') return '夜';          // 準夜勤 → 夜
+    if (s === '明' || s === '夜明' || s === '夜勤明' || s === 'A' || s === '深') return '明'; // 深夜勤 → 明
+    // 管夜・管明はW4のSHIFT_TYPESに定義済みのため直接マッピング（フォールバック不要）
+    if (s === '管夜' || s === '管理夜勤' || s === '管準') return '管夜';             // 管理準夜 → 管夜
+    if (s === '管明' || s === '管理夜明' || s === '管理夜勤明' || s === '管深') return '管明'; // 管理深夜 → 管明
+    if (s === '短1' || s === '短4' || s === '遅1' || s === '遅4') return '日';       // 時短・遅出は日勤扱い
     if (s === '休' || s === '公休' || s === '公' || s === 'O' || s === '0') return '休';
-    if (s === '有' || s === '有休' || s === '有給' || s === 'Y') return '有';
+    if (s === '有' || s === '有休' || s === '有給' || s === 'Y' || s === '年') return '有';
     if (s === 'nan' || s === 'NaN') return '休';
-    // システムシフトまたはカスタムシフトならそのまま返す
+    // 半休(ﾊ)・年休(ﾈ) を含む複合記号（例: '/ﾊ', 'ﾀ1/ﾈ' 等）は休扱い
+    if (s.includes('ﾊ') || s.includes('ﾈ')) return '休';
+    // システムシフトまたはカスタムシフトならそのまま返す（恒等変換）
     return VALID_SHIFTS.includes(s) || validShifts.includes(s) ? s : '';
+  };
+
+  // 変換後データの夜勤パターン整合性チェック（警告のみ。取り込みは止めない）。
+  // ・「夜(管夜)」の翌日が「明(管明)」でない
+  // ・「明(管明)」の翌日が「休」でも「夜(管夜)」でもない（夜明→休、夜明夜明→休休 が正常）
+  // ※配列末尾（＝月末日）は翌日が翌月にまたがるため i < len-1 で自動的に検証対象外となる
+  const checkNightPatternWarnings = (name: string, shifts: string[], warnings: any[], days?: number[]) => {
+    const isNight = (s: string) => s === '夜' || s === '管夜';
+    const isAke = (s: string) => s === '明' || s === '管明';
+    for (let i = 0; i < shifts.length - 1; i++) {
+      const cur = shifts[i];
+      const next = shifts[i + 1];
+      if (!cur || !next) continue; // 空セルはスキップ（未対応記号は別途警告済み）
+      const day = days && days[i] != null ? days[i] : i + 1;
+      if (isNight(cur) && !isAke(next)) {
+        warnings.push({ name, day, symbol: `${cur}→${next}`, detail: '夜の翌日が明ではありません' });
+      }
+      if (isAke(cur) && !(next === '休' || isNight(next))) {
+        warnings.push({ name, day, symbol: `${cur}→${next}`, detail: '明の翌日が休でも夜でもありません' });
+      }
+    }
   };
 
   // 前月データをクリア
@@ -8520,6 +8617,9 @@ const WardScheduleSystem = () => {
                     <div className="mt-4 p-3 bg-gray-50 rounded-lg text-sm">
                       <div className="flex gap-6 flex-wrap">
                         <span>Excel読み込み件数: <strong>{prevMonthRawData.length}名</strong></span>
+                        {prevMonthImportReport && (
+                          <span>ファイル内職員: <strong>{prevMonthImportReport.totalStaff}名</strong>（うち照合 <strong className="text-green-600">{prevMonthImportReport.matchedStaff}名</strong>）</span>
+                        )}
                         <span>マッピング済み: <strong className="text-green-600">
                           {Object.values(prevMonthMapping).filter(v => v !== undefined).length}名
                         </strong></span>
@@ -8528,7 +8628,46 @@ const WardScheduleSystem = () => {
                         </strong></span>
                       </div>
                     </div>
-                    
+
+                    {/* 取込レポート: 未登録職員・未対応記号（CWS対応） */}
+                    {prevMonthImportReport && prevMonthImportReport.unregistered.length > 0 && (
+                      <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm">
+                        <p className="font-semibold text-yellow-800 mb-1">
+                          ⚠️ 未登録職員（システムの職員と照合できませんでした）: {prevMonthImportReport.unregistered.length}名
+                        </p>
+                        <p className="text-yellow-700 break-words">
+                          {prevMonthImportReport.unregistered.join('、')}
+                        </p>
+                        <p className="text-xs text-yellow-600 mt-1">
+                          ※ 上の表で各職員に手動でExcel行を割り当てることもできます。
+                        </p>
+                      </div>
+                    )}
+                    {prevMonthImportReport && prevMonthImportReport.unmappedSymbols.length > 0 && (
+                      <div className="mt-3 p-3 bg-orange-50 border border-orange-200 rounded-lg text-sm">
+                        <p className="font-semibold text-orange-800 mb-1">
+                          ⚠️ 未対応の勤務記号: {prevMonthImportReport.unmappedSymbols.length}件（該当セルは空として取り込みます）
+                        </p>
+                        <div className="max-h-32 overflow-auto text-orange-700">
+                          {prevMonthImportReport.unmappedSymbols.map((w: any, i: number) => (
+                            <div key={i}>{w.name}・{w.day}日: <strong>{w.symbol}</strong></div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {prevMonthImportReport && prevMonthImportReport.patternWarnings && prevMonthImportReport.patternWarnings.length > 0 && (
+                      <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-sm">
+                        <p className="font-semibold text-red-800 mb-1">
+                          ⚠️ 夜勤パターンの異常: {prevMonthImportReport.patternWarnings.length}件（取り込みは続行されます。変換ミスがないかご確認ください）
+                        </p>
+                        <div className="max-h-32 overflow-auto text-red-700">
+                          {prevMonthImportReport.patternWarnings.map((w: any, i: number) => (
+                            <div key={i}>{w.name}・{w.day}日: <strong>{w.symbol}</strong> — {w.detail}</div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex justify-between items-center mt-6">
                       <button
                         type="button"
