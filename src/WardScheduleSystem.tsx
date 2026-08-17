@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { Calendar, CalendarDays, Settings, Moon, Sun, Clock, RefreshCw, AlertCircle, CheckCircle, Plus, Trash2, LogOut, Lock, Download, Upload, Edit2, Save, X, Eye, Users, FileSpreadsheet, Activity, Maximize2, Minimize2, ChevronUp, ChevronDown, RotateCcw, History, BarChart3, UserX, List, Shield, GripVertical } from 'lucide-react';
 import * as XLSX from 'xlsx-js-style';
 import { supabase } from './lib/supabase';
@@ -220,15 +220,66 @@ interface ScheduleVersion {
   data: Record<number, (string | null)[]>;
 }
 
+// 夜勤の自動補完の解除: 「夜」「管夜」から別の記号へ変えたとき、自動セットされた
+// 翌日の明系と翌々日の休を取り消す。職員入力の①をそのまま共用する。
+// ※ otherNightBefore の条件は (d2 - 2) === day のため常に false になるが、
+//    職員入力の挙動を変えないため既存ロジックのまま移設している。
+const clearNightChain = (
+  nurseRequests: Record<string | number, any>,
+  day: number,
+  currentValue: string | null,
+  daysInMonth: number,
+  dbChanges: Record<number, string | null>
+) => {
+  if (currentValue !== '夜' && currentValue !== '管夜') return;
+  const akeType = currentValue === '夜' ? '明' : '管明';
+  if (day + 1 <= daysInMonth && nurseRequests[day + 1] === akeType) {
+    delete nurseRequests[day + 1];
+    dbChanges[day + 1] = null;
+  }
+  if (day + 2 <= daysInMonth && nurseRequests[day + 2] === '休') {
+    const d2 = day + 2;
+    const otherNightBefore = d2 >= 2 && (nurseRequests[d2 - 2] === '夜' || nurseRequests[d2 - 2] === '管夜') && (d2 - 2) !== day;
+    if (!otherNightBefore) {
+      delete nurseRequests[day + 2];
+      dbChanges[day + 2] = null;
+    }
+  }
+};
+
+// 夜勤の自動補完: 夜→翌日 明・翌々日 休 / 管夜→翌日 管明・翌々日 休。
+// 翌日・翌々日が「空のときだけ」書き込み、既存の値は上書きしない。
+// day + 1 / day + 2 が月末を超える場合は書き込まない（翌月に行を作らない）。
+// 職員入力(handleStaffRequestClick)と希望一覧のインライン編集で共用する。
+const applyNightChain = (
+  nurseRequests: Record<string | number, any>,
+  day: number,
+  newValue: string | null,
+  daysInMonth: number,
+  dbChanges: Record<number, string | null>
+) => {
+  if (newValue !== '夜' && newValue !== '管夜') return;
+  const akeType = newValue === '夜' ? '明' : '管明';
+  if (day + 1 <= daysInMonth && !nurseRequests[day + 1]) {
+    nurseRequests[day + 1] = akeType;
+    dbChanges[day + 1] = akeType;
+  }
+  if (day + 2 <= daysInMonth && !nurseRequests[day + 2]) {
+    nurseRequests[day + 2] = '休';
+    dbChanges[day + 2] = '休';
+  }
+};
+
 // シフト選択ポップオーバー（勤務表グリッドと希望一覧で共用）
 // 表示のみを担当し、選択結果は onSelect / onClose で呼び出し側に返す。
 const ShiftPickerPopover = ({
-  title, currentShift, x, y, allShifts, customShifts, onSelect, onClose,
+  title, currentShift, x, y, anchorTop, allShifts, customShifts, onSelect, onClose,
 }: {
   title: string;
   currentShift: string | null;
-  x: number;
-  y: number;
+  x: number;          // アンカーの左端（viewport 座標）
+  y: number;          // アンカーの下端（viewport 座標）
+  anchorTop?: number; // アンカーの上端。指定時のみビューポート内に収める新方式を使う
   allShifts: Record<string, any>;
   customShifts: CustomShift[];
   onSelect: (symbol: string | null) => void;
@@ -248,6 +299,31 @@ const ShiftPickerPopover = ({
   const popY = y + window.scrollY;
   const showAbove = y > window.innerHeight - 250;
 
+  // anchorTop が渡された場合は、実寸を測ってビューポート内に必ず収める。
+  // （position:fixed は viewport 基準なので scrollY を足してはいけない。
+  //   旧方式は勤務表グリッド専用として温存し、挙動を変えない。）
+  const clampToViewport = anchorTop !== undefined;
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [clampedPos, setClampedPos] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!clampToViewport) return;
+    const el = panelRef.current;
+    if (!el) return;
+    const M = 8; // ビューポート端の余白
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    // 横: 右端でも左端でもはみ出さないようにクランプ
+    const left = Math.max(M, Math.min(x, window.innerWidth - w - M));
+    // 縦: 下に入らなければアンカーの上へ反転。それでも入らなければ下端に寄せる
+    let top = y + 4;
+    if (top + h > window.innerHeight - M) {
+      const above = (anchorTop as number) - h - 4;
+      top = above >= M ? above : Math.max(M, window.innerHeight - h - M);
+    }
+    setClampedPos({ left, top });
+  }, [clampToViewport, x, y, anchorTop, customShifts.length]);
+
   return (
     <>
       <div
@@ -255,8 +331,14 @@ const ShiftPickerPopover = ({
         onClick={onClose}
       />
       <div
+        ref={panelRef}
         className="fixed z-50 bg-white rounded-xl shadow-2xl border-2 border-gray-200 p-3 w-[280px]"
-        style={{
+        style={clampToViewport ? {
+          left: `${clampedPos ? clampedPos.left : x}px`,
+          top: `${clampedPos ? clampedPos.top : y + 4}px`,
+          // 実寸を測るまでの1フレームのちらつきを防ぐ
+          visibility: clampedPos ? 'visible' : 'hidden',
+        } : {
           left: `${popX}px`,
           top: showAbove ? undefined : `${popY + 4}px`,
           bottom: showAbove ? `${window.innerHeight - y + window.scrollY + 4}px` : undefined,
@@ -424,7 +506,7 @@ const WardScheduleSystem = () => {
   const [newNurseData, setNewNurseData] = useState({ name: '', position: '一般' });
   const [editingCell, setEditingCell] = useState<{ nurseId: number; dayIndex: number; x: number; y: number } | null>(null);
   // 希望一覧モーダルのインライン編集（管理者のみ）。day は 1-based。
-  const [editingRequestCell, setEditingRequestCell] = useState<{ nurseId: number; day: number; x: number; y: number } | null>(null);
+  const [editingRequestCell, setEditingRequestCell] = useState<{ nurseId: number; day: number; x: number; y: number; top: number } | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generatingPhase, setGeneratingPhase] = useState('');
   const [generatedPatterns, setGeneratedPatterns] = useState<any[]>([]);
@@ -806,15 +888,15 @@ const WardScheduleSystem = () => {
 
   // ポップオーバーが開いている時、スクロールやリサイズで閉じる
   useEffect(() => {
-    if (!editingCell) return;
-    const close = () => setEditingCell(null);
+    if (!editingCell && !editingRequestCell) return;
+    const close = () => { setEditingCell(null); setEditingRequestCell(null); };
     window.addEventListener('scroll', close, true);
     window.addEventListener('resize', close);
     return () => {
       window.removeEventListener('scroll', close, true);
       window.removeEventListener('resize', close);
     };
-  }, [editingCell]);
+  }, [editingCell, editingRequestCell]);
 
   // 保存ラッパー関数（保存状態管理 + LocalStorageバックアップ）
   const saveWithStatus = async (saveFn: () => Promise<void>) => {
@@ -931,28 +1013,47 @@ const WardScheduleSystem = () => {
 
   // 希望一覧モーダルからの1セル編集（管理者用）。
   // 保存は職員入力と同じ saveRequestToDB を使い、DB書き込み経路は増やさない。
-  // 職員側のサイクルUIと違い、選んだ記号を1セルだけ書き込む（夜→明→休の自動補完はしない）。
+  // 夜勤の自動補完/解除は職員入力と同じ applyNightChain / clearNightChain を使う。
+  // 「クリア」は選択セルのみを消す（翌日以降には触れない）。
   const applyRequestFromPalette = (nurseId: number, day: number, newValue: string | null) => {
     const monthKey = `${targetYear}-${targetMonth}`;
     const nurseIdKey = String(nurseId);
+    const days = getDaysInMonth(targetYear, targetMonth);
     const oldValue = requests[monthKey]?.[nurseIdKey]?.[day] ?? null;
     setEditingRequestCell(null);
     if (oldValue === newValue) return;
 
-    setRequests((prev: any) => {
-      const monthRequests = { ...(prev[monthKey] || {}) };
-      const nurseRequests = { ...(monthRequests[nurseIdKey] || {}) };
-      if (newValue) {
-        nurseRequests[day] = newValue;
-      } else {
-        delete nurseRequests[day];
-      }
-      monthRequests[nurseIdKey] = nurseRequests;
-      return { ...prev, [monthKey]: monthRequests };
-    });
+    // 変更内容を先に確定させてから state と DB に反映する
+    // （setRequests のupdater内で外側の変数を書き換えると保存時に間に合わない）
+    const nurseRequests: Record<string | number, any> = { ...(requests[monthKey]?.[nurseIdKey] || {}) };
+    const dbChanges: Record<number, string | null> = {};
+
+    // ① 「夜」「管夜」から別の記号へ変更 → 自動セットされた明系・休を解除。
+    //    「クリア」は選択セルのみを消す仕様のため対象外とする。
+    if (newValue !== null) {
+      clearNightChain(nurseRequests, day, oldValue, days, dbChanges);
+    }
+
+    // ② セル値更新
+    if (newValue) {
+      nurseRequests[day] = newValue;
+    } else {
+      delete nurseRequests[day];
+    }
+    dbChanges[day] = newValue;
+
+    // ③ 夜勤の自動補完
+    applyNightChain(nurseRequests, day, newValue, days, dbChanges);
+
+    setRequests((prev: any) => ({
+      ...prev,
+      [monthKey]: { ...(prev[monthKey] || {}), [nurseIdKey]: nurseRequests },
+    }));
 
     saveWithStatus(async () => {
-      await saveRequestToDB(nurseId, targetYear, targetMonth, day, newValue);
+      for (const [d, val] of Object.entries(dbChanges)) {
+        await saveRequestToDB(nurseId, targetYear, targetMonth, Number(d), val);
+      }
     });
 
     const targetNurse = nurses.find(n => n.id === nurseId);
@@ -3755,21 +3856,7 @@ const WardScheduleSystem = () => {
       }
 
       // ① 「夜」or「管夜」解除時 → 自動セットした明系・休のみクリア
-      if (currentRequest === '夜' || currentRequest === '管夜') {
-        const akeType = currentRequest === '夜' ? '明' : '管明';
-        if (day + 1 <= days && nurseRequests[day + 1] === akeType) {
-          delete nurseRequests[day + 1];
-          dbChanges[day + 1] = null;
-        }
-        if (day + 2 <= days && nurseRequests[day + 2] === '休') {
-          const d2 = day + 2;
-          const otherNightBefore = d2 >= 2 && (nurseRequests[d2 - 2] === '夜' || nurseRequests[d2 - 2] === '管夜') && (d2 - 2) !== day;
-          if (!otherNightBefore) {
-            delete nurseRequests[day + 2];
-            dbChanges[day + 2] = null;
-          }
-        }
-      }
+      clearNightChain(nurseRequests, day, currentRequest, days, dbChanges);
 
       // ② セル値更新
       if (newValue) {
@@ -3780,17 +3867,7 @@ const WardScheduleSystem = () => {
       dbChanges[day] = newValue;
 
       // ③ 新しく「夜」or「管夜」→ 翌日・翌々日が空の場合のみ自動セット
-      if (newValue === '夜' || newValue === '管夜') {
-        const akeType = newValue === '夜' ? '明' : '管明';
-        if (day + 1 <= days && !nurseRequests[day + 1]) {
-          nurseRequests[day + 1] = akeType;
-          dbChanges[day + 1] = akeType;
-        }
-        if (day + 2 <= days && !nurseRequests[day + 2]) {
-          nurseRequests[day + 2] = '休';
-          dbChanges[day + 2] = '休';
-        }
-      }
+      applyNightChain(nurseRequests, day, newValue, days, dbChanges);
 
       monthRequests[nurseIdKey] = nurseRequests;
       return { ...prev, [monthKey]: monthRequests };
@@ -7210,7 +7287,7 @@ const WardScheduleSystem = () => {
                                   if (con) return;
                                   if (isEditingThis) { setEditingRequestCell(null); return; }
                                   const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                                  setEditingRequestCell({ nurseId: nurse.id, day, x: rect.left, y: rect.bottom });
+                                  setEditingRequestCell({ nurseId: nurse.id, day, x: rect.left, y: rect.bottom, top: rect.top });
                                 } : undefined}
                                 className={`border p-1 text-center ${isAdminAuth && !con ? 'cursor-pointer hover:ring-2 hover:ring-blue-300 hover:ring-inset' : ''} ${isEditingThis ? 'ring-2 ring-blue-500 ring-inset' : ''} ${isConflict ? 'ring-2 ring-red-500 ring-inset' : ''} ${
                                 req === '休' ? 'bg-gray-200' :
@@ -7262,6 +7339,7 @@ const WardScheduleSystem = () => {
                     currentShift={cur}
                     x={editingRequestCell.x}
                     y={editingRequestCell.y}
+                    anchorTop={editingRequestCell.top}
                     allShifts={allShifts}
                     customShifts={customShifts}
                     onSelect={(symbol) => applyRequestFromPalette(editingRequestCell.nurseId, editingRequestCell.day, symbol)}
