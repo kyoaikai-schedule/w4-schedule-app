@@ -259,9 +259,31 @@ const WardScheduleSystem = () => {
   // ローディング状態
   const [isLoading, setIsLoading] = useState(true);
 
-  // 対象年月
-  const [targetYear, setTargetYear] = useState(new Date().getFullYear());
-  const [targetMonth, setTargetMonth] = useState(new Date().getMonth());
+  // 対象年月（localStorage に永続化）
+  // リロードで当月に戻ると、翌月分として入力済みの希望が画面から消えたように
+  // 見えるため、最後に選んだ年月を復元する。
+  // month は 0〜11 の JS 形式。DB の month 列と同じ 0 基準のまま保存する。
+  const targetPeriodKey = `${dbPrefix}-target-period`;
+  const readStoredPeriod = () => {
+    const now = new Date();
+    const fallback = { year: now.getFullYear(), month: now.getMonth() };
+    try {
+      const raw = localStorage.getItem(targetPeriodKey);
+      if (!raw) return fallback;
+      const parsed = JSON.parse(raw);
+      const y = parsed?.year;
+      const m = parsed?.month;
+      // 壊れた値・範囲外は無視して当月にフォールバックする
+      if (!Number.isInteger(y) || y < 2000 || y > 2100) return fallback;
+      if (!Number.isInteger(m) || m < 0 || m > 11) return fallback;
+      return { year: y, month: m };
+    } catch (e) {
+      console.error('対象年月の読み込みエラー:', e);
+      return fallback;
+    }
+  };
+  const [targetYear, setTargetYear] = useState(() => readStoredPeriod().year);
+  const [targetMonth, setTargetMonth] = useState(() => readStoredPeriod().month);
   
   // 看護師データ（Supabase永続化）
   const [nurses, setNurses] = useState<any[]>([]);
@@ -412,16 +434,32 @@ const WardScheduleSystem = () => {
     return validShifts.includes(str) ? str : null;
   };
 
+  // 対象年月の変更を localStorage に保存する。
+  // ダッシュボードの月カード・年月セレクタなど、どの経路で変更されても
+  // 確実に永続化されるよう state の変更を1か所で拾う。
+  useEffect(() => {
+    try {
+      localStorage.setItem(targetPeriodKey, JSON.stringify({ year: targetYear, month: targetMonth }));
+    } catch (e) {
+      console.error('対象年月の保存エラー:', e);
+    }
+  }, [targetYear, targetMonth]);
+
   // Supabaseからデータ読み込み
   useEffect(() => {
+    // 月を切り替えると本 effect が再実行される。先行する実行が後から解決して
+    // 新しい月のデータを古い月で上書きしないよう、最新の実行だけが反映する。
+    let cancelled = false;
     const loadData = async () => {
       try {
         setIsLoading(true);
         const dbNurses = await fetchNursesFromDB();
+        if (cancelled) return;
         if (dbNurses.length > 0) {
           setNurses(dbNurses);
         }
         const dbRequests = await fetchRequestsFromDB(targetYear, targetMonth);
+        if (cancelled) return;
         const reqMap: Record<string, any> = {};
         dbRequests.forEach((r: any) => {
           const monthKey = `${r.year}-${r.month}`;
@@ -432,6 +470,7 @@ const WardScheduleSystem = () => {
         setRequests(reqMap);
 
         const dbSchedules = await fetchSchedulesFromDB(targetYear, targetMonth);
+        if (cancelled) return;
         if (dbSchedules.length > 0) {
           const days = getDaysInMonth(targetYear, targetMonth);
           const schedData: Record<number, (string | null)[]> = {};
@@ -463,6 +502,7 @@ const WardScheduleSystem = () => {
         // 前月データの読み込み（月別キーで保存）
         const pmKey = `prevMonth-${targetYear}-${targetMonth}`;
         const savedPrevData = await fetchSettingFromDB(pmKey);
+        if (cancelled) return;
         if (savedPrevData) {
           try {
             const parsed = JSON.parse(savedPrevData);
@@ -576,11 +616,14 @@ const WardScheduleSystem = () => {
       } catch (error: any) {
         console.error('データ読み込みエラー:', error);
       } finally {
-        setSettingsLoaded(true);
-        setIsLoading(false);
+        if (!cancelled) {
+          setSettingsLoaded(true);
+          setIsLoading(false);
+        }
       }
     };
     loadData();
+    return () => { cancelled = true; };
   }, [targetYear, targetMonth]);
 
   // generateConfigの変更をDBに保存
@@ -687,7 +730,7 @@ const WardScheduleSystem = () => {
   // LocalStorageバックアップ保存
   const saveScheduleToLocalStorage = (scheduleData: any) => {
     try {
-      const key = `hcu-schedule-backup-${targetYear}-${targetMonth}`;
+      const key = `${dbPrefix}-schedule-backup-${targetYear}-${targetMonth}`;
       localStorage.setItem(key, JSON.stringify(scheduleData));
     } catch (e) {
       console.error('LocalStorage保存エラー:', e);
@@ -697,7 +740,7 @@ const WardScheduleSystem = () => {
   // LocalStorageバックアップ復元
   const loadScheduleFromLocalStorage = () => {
     try {
-      const key = `hcu-schedule-backup-${targetYear}-${targetMonth}`;
+      const key = `${dbPrefix}-schedule-backup-${targetYear}-${targetMonth}`;
       const data = localStorage.getItem(key);
       return data ? JSON.parse(data) : null;
     } catch (e) {
@@ -709,7 +752,7 @@ const WardScheduleSystem = () => {
   // LocalStorageバックアップ削除
   const clearScheduleFromLocalStorage = () => {
     try {
-      const key = `hcu-schedule-backup-${targetYear}-${targetMonth}`;
+      const key = `${dbPrefix}-schedule-backup-${targetYear}-${targetMonth}`;
       localStorage.removeItem(key);
     } catch (e) {
       console.error('LocalStorage削除エラー:', e);
