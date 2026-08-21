@@ -79,6 +79,35 @@ const CUSTOM_SHIFT_EXCEL_COLORS: Record<string, { bg: string; fg: string }> = {
 };
 
 const VALID_SHIFTS = ['日', '夜', '明', '管夜', '管明', '休', '有', '午前半', '午後半'];
+
+// solver.py の _build_forced.apply() が処理できる希望ラベル。
+// apply() には else 節がないため、ここに無いラベルは黙って無視される（サイレント失敗）。
+const SOLVER_APPLICABLE_SHIFTS = ['管夜', '管明', '明', '夜', '日', '休', '有'];
+
+// ソルバー送信時の希望ラベル変換表。
+// ソルバーは DAY/NIGHT/OFF の3値モデルで研修・出張・半休等の概念を持たない。
+// 研修・出張・認定・委員会・ラダー・午後研修は師長確認済み（2026-08-21）で
+// 終日「日勤1名」として送る。研修者等が日勤必要数の枠を1つ占有する
+// （必要11人の日のフロア実働は10人になる）運用で合意済み。
+// 半休（前/後/午前半/午後半 と記号4種）も同様に「日勤1名」として送る。
+// 送信値は '日' だが、生成結果の表示時に getRequestRestoreMap() で元へ復元する。
+// ﾈ・ｹ は半角カタカナ（U+FF88 / U+FF79）。シフト種類管理の登録記号と同一。
+const SOLVER_REQUEST_CONVERSIONS: Record<string, string> = {
+  '前': '日',
+  '後': '日',
+  '午前半': '日',
+  '午後半': '日',
+  '研': '日',
+  '出張': '日',
+  '認': '日',
+  '委': '日',
+  'ラダー': '日',
+  '/研': '日',
+  '/ﾈ': '日',
+  'ﾈ/': '日',
+  '/ｹ': '日',
+  'ｹ/': '日',
+};
 const sanitizeShift = (s: any): string | null => {
   if (!s) return null;
   const str = String(s).trim();
@@ -1962,11 +1991,36 @@ const WardScheduleSystem = () => {
       };
     });
 
+    // === 希望ラベルをソルバーが解釈できる形へ変換して送る ===
+    // solver.py の apply() は SOLVER_APPLICABLE_SHIFTS 以外を黙って無視するため、
+    // 変換表にあるラベルは '日' へ変換し、どちらにも無いラベルは警告として収集する
+    // （収集結果は getUnknownRequestLabels() 経由で生成レポートにも表示される）。
     const requestData: Record<string, Record<string, string>> = {};
+    const unknownLabels: string[] = [];
     generationNurses.forEach(n => {
       const nr = requests[monthKey]?.[String(n.id)] || {};
-      if (Object.keys(nr).length > 0) requestData[String(n.id)] = nr as Record<string, string>;
+      if (Object.keys(nr).length === 0) return;
+      const converted: Record<string, string> = {};
+      Object.entries(nr).forEach(([day, label]) => {
+        const v = label as string;
+        const mapped = typeof v === 'string' ? SOLVER_REQUEST_CONVERSIONS[v] : undefined;
+        if (mapped) {
+          converted[day] = mapped;
+        } else {
+          converted[day] = v;
+          if (typeof v === 'string' && v && !SOLVER_APPLICABLE_SHIFTS.includes(v)) {
+            unknownLabels.push(`${n.name} ${day}日「${v}」`);
+          }
+        }
+      });
+      requestData[String(n.id)] = converted;
     });
+    if (unknownLabels.length > 0) {
+      console.warn(
+        '[buildSolverRequest] ソルバーが解釈できない希望ラベルが含まれています（これらの希望は無視されます）:',
+        unknownLabels
+      );
+    }
 
     // 年度切り替え対策: 現在のスタッフリストに存在しない ID の prevMonthConstraints は除外
     // (前月在籍で当月不在のスタッフが残っているとソルバーが警告するため)
@@ -2018,6 +2072,43 @@ const WardScheduleSystem = () => {
     }
 
     return request;
+  };
+
+  // 変換して送った希望の復元マップ { nurseId: { 0-based日index: { sent, label } } }
+  // buildSolverRequest が SOLVER_REQUEST_CONVERSIONS で '日' に変換して送った希望を、
+  // 生成結果の表示時に元のラベル（研/出張/半休 等）へ戻すために使う。
+  // sent は送信値。ソルバーが希望どおりその値を置いた場合にのみ復元するため保持する。
+  const getRequestRestoreMap = (): Record<string, Record<number, { sent: string; label: string }>> => {
+    const monthKey = `${targetYear}-${targetMonth}`;
+    const map: Record<string, Record<number, { sent: string; label: string }>> = {};
+    Object.entries(requests[monthKey] || {}).forEach(([nid, days]: [string, any]) => {
+      Object.entries(days || {}).forEach(([day, label]) => {
+        if (typeof label !== 'string') return;
+        const sent = SOLVER_REQUEST_CONVERSIONS[label];
+        if (!sent) return;
+        // requests のキーは1-based、ソルバー結果の配列は0-based
+        if (!map[nid]) map[nid] = {};
+        map[nid][Number(day) - 1] = { sent, label };
+      });
+    });
+    return map;
+  };
+
+  // 変換表にもソルバー対応表にも無い希望ラベル（= 黙って無視されるもの）の一覧。
+  // 生成レポートに ⚠️ 行として表示し、サイレント欠落を可視化する。
+  const getUnknownRequestLabels = (): string[] => {
+    const monthKey = `${targetYear}-${targetMonth}`;
+    const out: string[] = [];
+    activeNurses.filter(n => !nurseShiftPrefs[n.id]?.excludeFromGeneration).forEach(n => {
+      const nr = requests[monthKey]?.[String(n.id)] || {};
+      Object.entries(nr).forEach(([day, label]) => {
+        const v = label as string;
+        if (typeof v === 'string' && v && !SOLVER_REQUEST_CONVERSIONS[v] && !SOLVER_APPLICABLE_SHIFTS.includes(v)) {
+          out.push(`${n.name} ${day}日「${v}」`);
+        }
+      });
+    });
+    return out;
   };
 
   // 勤務表自動生成（マルチフェーズ制約最適化 + 焼きなまし法）
@@ -2079,10 +2170,23 @@ const WardScheduleSystem = () => {
 
         // API結果をフロントエンド形式に変換
         const excludedNurses = activeNurses.filter(n => nurseShiftPrefs[n.id]?.excludeFromGeneration);
+        // '日' として送った希望（研/出張/半休 等）を元のラベルへ復元する
+        const requestRestore = getRequestRestoreMap();
+        // 無視された未知ラベルの警告（レポート表示用）
+        const unknownReqWarnings = getUnknownRequestLabels();
         const patterns = result.patterns.map((p: any, idx: number) => {
           const data: Record<number, string[]> = {};
           Object.entries(p.data).forEach(([nid, shifts]: [string, any]) => {
-            data[Number(nid)] = shifts;
+            const arr = Array.isArray(shifts) ? [...shifts] : shifts;
+            const restore = requestRestore[String(nid)];
+            if (restore && Array.isArray(arr)) {
+              Object.entries(restore).forEach(([dayIdx, entry]) => {
+                const i = Number(dayIdx);
+                // ソルバーが希望どおり送信値を置いた場合のみ復元する（他シフトは上書きしない）
+                if (i >= 0 && i < arr.length && arr[i] === entry.sent) arr[i] = entry.label;
+              });
+            }
+            data[Number(nid)] = arr;
           });
           excludedNurses.forEach(n => {
             data[n.id] = new Array(daysInMonth).fill(null);
@@ -2108,6 +2212,9 @@ const WardScheduleSystem = () => {
           }
           if (p.metrics?.warningMessage) {
             report.push('ℹ️ ' + p.metrics.warningMessage);
+          }
+          if (unknownReqWarnings.length > 0) {
+            report.push(`⚠️ ソルバーが解釈できない希望を無視しました（シフト種類の対応付けが必要です）: ${unknownReqWarnings.join('、')}`);
           }
 
           return {
