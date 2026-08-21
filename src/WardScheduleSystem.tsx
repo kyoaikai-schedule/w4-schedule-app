@@ -6604,14 +6604,23 @@ const WardScheduleSystem = () => {
                             }`}
                             style={{ minWidth: isMaximized ? '20px' : '32px' }}
                           >
-                            <div className={isMaximized ? 'text-[11px] leading-none' : ''}>{shift || ''}</div>
+                            {/* 最大化時は行高を増やさないよう、注記をシフト文字と同一行にインライン表示する */}
+                            <div className={isMaximized ? 'text-[11px] leading-none whitespace-nowrap' : ''}>
+                              {shift || ''}
+                              {isMaximized && differsFromRequest && (
+                                <span className="text-[7px] text-gray-400 align-middle"> 元:{reqVal}</span>
+                              )}
+                              {isMaximized && differsFromPrev && !reqVal && (
+                                <span className="text-[7px] text-orange-400 align-middle"> 前:{prevCon}</span>
+                              )}
+                            </div>
                             {(hasError || hasWarning) && (
                               <span className={`absolute top-0 right-0 text-[8px] leading-none ${hasError ? 'text-red-500' : 'text-orange-400'}`}>▲</span>
                             )}
-                            {differsFromRequest && (
+                            {!isMaximized && differsFromRequest && (
                               <div className="text-[9px] text-gray-400 leading-tight">元:{reqVal}</div>
                             )}
-                            {differsFromPrev && !reqVal && (
+                            {!isMaximized && differsFromPrev && !reqVal && (
                               <div className="text-[9px] text-orange-400 leading-tight">前:{prevCon}</div>
                             )}
                           </td>
