@@ -6608,10 +6608,10 @@ const WardScheduleSystem = () => {
                             {(hasError || hasWarning) && (
                               <span className={`absolute top-0 right-0 text-[8px] leading-none ${hasError ? 'text-red-500' : 'text-orange-400'}`}>▲</span>
                             )}
-                            {!isMaximized && differsFromRequest && (
+                            {differsFromRequest && (
                               <div className="text-[9px] text-gray-400 leading-tight">元:{reqVal}</div>
                             )}
-                            {!isMaximized && differsFromPrev && !reqVal && (
+                            {differsFromPrev && !reqVal && (
                               <div className="text-[9px] text-orange-400 leading-tight">前:{prevCon}</div>
                             )}
                           </td>
