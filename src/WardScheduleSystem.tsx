@@ -1499,43 +1499,73 @@ const WardScheduleSystem = () => {
 
   const [excelImportConfirmed, setExcelImportConfirmed] = useState(false); // 確定済みフラグ
 
-  const applyExcelImport = () => {
+  // 名前突き合わせ用の正規化（半角/全角空白を除去）
+  const normalizeNurseName = (s: any) => String(s || '').replace(/[\s　]+/g, '');
+
+  const applyExcelImport = async () => {
     if (excelPreview.length === 0) {
       alert('読み込むデータがありません');
       return;
     }
 
-    // 確認ダイアログ
-    if (!window.confirm(`⚠️ ${excelPreview.length}名の職員情報で現在のリストを上書きします。\nこの操作は取り消せません。\n\n本当に実行しますか？`)) {
+    const parsePosition = (raw: any) => {
+      const posStr = String(raw || '').replace(/\s+/g, '');
+      if (posStr.includes('師長')) return '師長';
+      if (posStr.includes('主任') && !posStr.includes('副')) return '主任';
+      if (posStr.includes('副主任') || (posStr.includes('副') && posStr.includes('主任'))) return '副主任';
+      return '一般';
+    };
+
+    // 既存職員と名前で突き合わせるマージ方式。
+    // 全削除・ID振り直しは行わない（requests / schedules の nurse_id 参照を保護）。
+    const byName = new Map(nurses.map((n: any) => [normalizeNurseName(n.name), n]));
+    const seen = new Set<string>();
+    const dupNames: string[] = [];
+    let nextId = Math.max(0, ...nurses.map((n: any) => n.id)) + 1;
+    let nextOrder = Math.max(-1, ...nurses.map((n: any) => n.display_order ?? -1)) + 1;
+
+    const toUpsert: any[] = [];
+    let updatedCount = 0;
+    let addedCount = 0;
+    for (const item of excelPreview) {
+      const key = normalizeNurseName(item.name);
+      if (seen.has(key)) { dupNames.push(item.name); continue; } // Excel内の重複名は先勝ち
+      seen.add(key);
+      const existing = byName.get(key);
+      if (existing) {
+        toUpsert.push({ ...existing, position: parsePosition(item.position), active: true });
+        updatedCount++;
+      } else {
+        toUpsert.push({ id: nextId++, name: item.name, position: parsePosition(item.position), active: true, display_order: nextOrder++ });
+        addedCount++;
+      }
+    }
+    // インポートに無い既存職員は削除せず非アクティブ化（過去の勤務表・希望を保護）
+    const toDeactivate = nurses
+      .filter((n: any) => n.active && !seen.has(normalizeNurseName(n.name)))
+      .map((n: any) => ({ ...n, active: false }));
+
+    const dupWarn = dupNames.length > 0 ? `\n※Excel内の重複名はスキップされます: ${dupNames.join('、')}` : '';
+    if (!window.confirm(`職員リストを更新します。\n更新 ${updatedCount}名 / 新規追加 ${addedCount}名 / 非アクティブ化 ${toDeactivate.length}名\n（職員行の削除は行いません）${dupWarn}\n\n実行しますか？`)) {
       return;
     }
 
-    const newNurses = excelPreview.map((item, index) => {
-      let position = '一般';
-      const posStr = (item.position || '').replace(/\s+/g, '');
-      
-      if (posStr.includes('師長')) position = '師長';
-      else if (posStr.includes('主任') && !posStr.includes('副')) position = '主任';
-      else if (posStr.includes('副主任') || (posStr.includes('副') && posStr.includes('主任'))) position = '副主任';
-      
-      return {
-        id: index + 1,
-        name: item.name,
-        active: true,
-        position: position
-      };
+    try {
+      for (const n of [...toUpsert, ...toDeactivate]) {
+        await upsertNurseToDB(n);
+      }
+    } catch (e: any) {
+      console.error('DB保存エラー:', e);
+      alert('職員リストの保存に失敗しました（途中まで保存された可能性があります）。\n再度「確定」を実行すると安全に上書きされます。\n' + (e?.message || e));
+      return;
+    }
+    // DB保存が成功してから画面へ反映する
+    const mergedById = new Map<number, any>([...toUpsert, ...toDeactivate].map((n: any) => [n.id, n]));
+    setNurses((prev: any[]) => {
+      const next = prev.map((n: any) => mergedById.get(n.id) || n);
+      const knownIds = new Set(next.map((n: any) => n.id));
+      return [...next, ...toUpsert.filter((n: any) => !knownIds.has(n.id))];
     });
-
-    setNurses(newNurses);
-    // DB一括保存
-    (async () => {
-      try {
-        await supabase.from(getTableName('nurses')).delete().neq('id', 0);
-        if (newNurses.length > 0) {
-          await supabase.from(getTableName('nurses')).insert(newNurses);
-        }
-      } catch (e) { console.error('DB保存エラー:', e); }
-    })();
     setExcelImportConfirmed(true);
   };
 
