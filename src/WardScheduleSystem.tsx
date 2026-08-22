@@ -4905,7 +4905,7 @@ const WardScheduleSystem = () => {
                 </div>
               </div>
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6">
-                <p className="text-sm text-amber-800"><strong>⚠️ 注意：</strong>「反映」で現在の職員リストが<strong>全て上書き</strong>されます。</p>
+                <p className="text-sm text-amber-800"><strong>⚠️ 注意：</strong>「反映」で既存職員と<strong>名前で突き合わせて更新</strong>します（一致=役職更新 / 新規名=追加 / リストに無い職員=非アクティブ化）。職員行の削除は行いません。</p>
               </div>
               <div className="flex justify-end gap-3">
                 <button onClick={closeExcelImport} className="px-6 py-2 bg-gray-200 hover:bg-gray-300 rounded-xl transition-colors">キャンセル</button>
