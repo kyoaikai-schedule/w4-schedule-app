@@ -8,8 +8,14 @@
 
 import { supabase } from './supabase';
 
-export const PREF_LOG_BLINDED = true; // w4 パイロット: フルブラインド提示（案1/2/3・おすすめ非表示）
+export const PREF_LOG_BLINDED = true; // w4 パイロット: フルブラインド提示（案1/2/3、順序シャッフル）
+export const PREF_AB_BADGE = true; // おすすめバッジ A/B テスト（design-badge-ab.md）。ブラインド提示時のみ有効
 const FEATURE_VERSION = 1;
+
+// バッジ A/B の腕割当: 生成完了時刻の epoch 分パリティ（偶数分 = バッジ表示）。
+// preparePatternsForSelect で1回だけ評価して _prefEvent に固定するため、
+// モーダル再レンダリングで腕が変わる（判断中にバッジが出没する）ことは構造的にない。
+const assignBadgeArm = (nowMs: number): boolean => Math.floor(nowMs / 60000) % 2 === 0;
 const TABLE = 'pattern_choice_events'; // 全病棟共有・prefix なし（schedule_drafts と同方式）
 
 export interface PrefFeatureCtx {
@@ -177,7 +183,11 @@ export const preparePatternsForSelect = (
   try {
     if (typeof crypto === 'undefined' || typeof crypto.randomUUID !== 'function') return patterns;
     const eventId = crypto.randomUUID();
-    const clientMeta = { daysInMonth: ctx.daysInMonth, nurseCount: ctx.nurseIds.length };
+    const badgeAssignedAtMs = Date.now();
+    // 腕はイベント単位でここで確定（null = 実験対象外: 非ブラインド提示）
+    const badgeShown: boolean | null =
+      PREF_LOG_BLINDED && PREF_AB_BADGE ? assignBadgeArm(badgeAssignedAtMs) : null;
+    const clientMeta = { daysInMonth: ctx.daysInMonth, nurseCount: ctx.nurseIds.length, badgeAssignedAtMs };
 
     const withPref = patterns.map((p, i) => {
       const hasError = !p.data || Object.keys(p.data).length === 0 || !!p.metrics?.error;
@@ -186,7 +196,7 @@ export const preparePatternsForSelect = (
       catch (e) { console.warn('[prefLog] computeFeatures 失敗:', e); }
       return {
         ...p,
-        _prefEvent: { eventId, clientMeta, ...meta, blinded: PREF_LOG_BLINDED },
+        _prefEvent: { eventId, clientMeta, badgeShown, ...meta, blinded: PREF_LOG_BLINDED },
         _pref: {
           trueIndex: i,
           trueLabel: p.label ?? null,
@@ -251,7 +261,14 @@ export const recordPatternChoice = (patterns: any[], adopted: any | null): void 
       outcome: adopted ? 'adopted' : 'cancelled',
       adopted_true_index: adopted ? adoptedTrueIndex : null,
       adopted_display_pos: adopted ? adoptedDisplayPos : null,
-      client_meta: ev.clientMeta ?? null,
+      badge_shown: typeof ev.badgeShown === 'boolean' ? ev.badgeShown : null, // A/B腕（null = 実験対象外）
+      client_meta: {
+        ...(ev.clientMeta ?? {}),
+        // 実提示: badge_shown=true でも trueIndex 0 が解なしならバッジは出ない（ITT と実提示を区別）
+        badgeDisplayed: typeof ev.badgeShown === 'boolean'
+          ? (ev.badgeShown && patterns.some(p => p?._pref?.trueIndex === 0 && !p?._pref?.hasError))
+          : null,
+      },
     };
 
     Promise.resolve(

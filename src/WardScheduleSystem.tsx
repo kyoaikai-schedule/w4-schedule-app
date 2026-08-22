@@ -8435,9 +8435,13 @@ const WardScheduleSystem = () => {
                     {generatedPatterns.map((pat, idx) => {
                       const m = pat.metrics || {};
                       const hasError = !pat.data || Object.keys(pat.data).length === 0 || m.error;
-                      // ブラインド提示中: シャッフル後の idx===0 は真の最良解ではないため「おすすめ」を出さない
+                      // ブラインド提示中の「おすすめ」はバッジ A/B テスト（design-badge-ab.md）:
+                      // badgeShown 腕のときだけ、システム推薦（trueIndex 0 = 変更前にバッジが
+                      // 付いていたのと同一パターン）へ表示位置に追随して付ける。腕は生成時に固定済み。
                       const prefBlinded = !!pat._pref && PREF_LOG_BLINDED;
-                      const isBest = idx === 0 && !hasError && !prefBlinded;
+                      const isBest = prefBlinded
+                        ? pat._prefEvent?.badgeShown === true && pat._pref?.trueIndex === 0 && !hasError
+                        : idx === 0 && !hasError;
                       // 緩和レベル / フォールバック状態のバッジ
                       let statusBadge: { text: string; cls: string } | null = null;
                       if (m.fallbackMode === 'error') {
