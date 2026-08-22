@@ -5,6 +5,7 @@ import { supabase } from './lib/supabase';
 import { validateRequests, buildConflictMap, RequestConflict } from './utils/validateRequests';
 import { getJapaneseHolidays } from './utils/holidays';
 import TeamScheduleTab from './components/TeamScheduleTab';
+import { preparePatternsForSelect, recordPatternChoice, buildDailyRequirements, PREF_LOG_BLINDED } from './lib/preferenceLog';
 
 // ============================================
 // 定数定義
@@ -2272,7 +2273,15 @@ const WardScheduleSystem = () => {
           return;
         }
 
-        setGeneratedPatterns(patterns);
+        // 選好記録(Stage1): 特徴量計算+表示順シャッフル。失敗時は patterns がそのまま返る
+        setGeneratedPatterns(preparePatternsForSelect(patterns, {
+          daysInMonth,
+          weekendHolidayDays: reqBody.weekends,
+          maxConsec: reqBody.config.maxConsecutiveDays,
+          nurseIds: activeNurses.filter(n => !nurseShiftPrefs[n.id]?.excludeFromGeneration).map(n => n.id),
+          requests: requests[`${targetYear}-${targetMonth}`] || {},
+          ...buildDailyRequirements({ daysInMonth, targetYear, targetMonth, weekendHolidayDays: reqBody.weekends, generateConfig }),
+        }, { ward: dbPrefix, targetYear, targetMonth: targetMonth + 1, generationMode: 'solver' }));
         setShowPatternSelect(true);
         setGenerating(false);
         setGeneratingPhase('');
@@ -3509,7 +3518,17 @@ const WardScheduleSystem = () => {
       { ...p3, label: 'パターンC' },
     ].sort((a, b) => b.score - a.score);
 
-    setGeneratedPatterns(patterns);
+    // 選好記録(Stage1): 特徴量計算+表示順シャッフル。失敗時は patterns がそのまま返る
+    const prefWeekendHolidayDays: number[] = [];
+    for (let d = 0; d < daysInMonth; d++) if (isWeekendOrHoliday(d)) prefWeekendHolidayDays.push(d);
+    setGeneratedPatterns(preparePatternsForSelect(patterns, {
+      daysInMonth,
+      weekendHolidayDays: prefWeekendHolidayDays,
+      maxConsec: cfg.maxConsec,
+      nurseIds: generationNurses.map(n => n.id),
+      requests: requests[`${targetYear}-${targetMonth}`] || {},
+      ...buildDailyRequirements({ daysInMonth, targetYear, targetMonth, weekendHolidayDays: prefWeekendHolidayDays, generateConfig }),
+    }, { ward: dbPrefix, targetYear, targetMonth: targetMonth + 1, generationMode: 'local' }));
     setGenerating(false);
     setGeneratingPhase('');
     setShowPatternSelect(true);
@@ -8408,7 +8427,7 @@ const WardScheduleSystem = () => {
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl">
                 <div className="flex items-center justify-between p-6 border-b">
                   <h3 className="text-xl font-bold text-gray-800">生成結果の比較（3パターン）</h3>
-                  <button type="button" onClick={() => { setShowPatternSelect(false); setGeneratedPatterns([]); }} className="p-2 hover:bg-gray-100 rounded-full"><X size={20} /></button>
+                  <button type="button" onClick={() => { recordPatternChoice(generatedPatterns, null); setShowPatternSelect(false); setGeneratedPatterns([]); }} className="p-2 hover:bg-gray-100 rounded-full"><X size={20} /></button>
                 </div>
                 <div className="p-6">
                   <p className="text-sm text-gray-600 mb-4">3つのパターンを比較して、最適なものを選択してください。</p>
@@ -8416,7 +8435,9 @@ const WardScheduleSystem = () => {
                     {generatedPatterns.map((pat, idx) => {
                       const m = pat.metrics || {};
                       const hasError = !pat.data || Object.keys(pat.data).length === 0 || m.error;
-                      const isBest = idx === 0 && !hasError;
+                      // ブラインド提示中: シャッフル後の idx===0 は真の最良解ではないため「おすすめ」を出さない
+                      const prefBlinded = !!pat._pref && PREF_LOG_BLINDED;
+                      const isBest = idx === 0 && !hasError && !prefBlinded;
                       // 緩和レベル / フォールバック状態のバッジ
                       let statusBadge: { text: string; cls: string } | null = null;
                       if (m.fallbackMode === 'error') {
@@ -8443,7 +8464,7 @@ const WardScheduleSystem = () => {
                             </div>
                           )}
                           <div className="flex items-center justify-between mb-3">
-                            <h4 className="font-bold text-lg">{pat.label}</h4>
+                            <h4 className="font-bold text-lg">{prefBlinded ? `案${idx + 1}` : pat.label}</h4>
                             {hasError && <span className="px-2 py-0.5 bg-red-100 text-red-700 rounded-full text-xs font-bold">解なし</span>}
                             {!hasError && isBest && <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-bold">おすすめ</span>}
                           </div>
@@ -8483,6 +8504,7 @@ const WardScheduleSystem = () => {
                                 saveScheduleToLocalStorage(pat.data);
                               });
                               insertAuditLog({ action: 'schedule_generate', user_type: 'admin', year: targetYear, month: targetMonth, details: `${pat.label}を採用` });
+                              recordPatternChoice(generatedPatterns, pat); // 選好記録(Stage1): fire-and-forget、失敗しても採用処理に影響しない
                               setShowPatternSelect(false);
                               setGeneratedPatterns([]);
                               const report: string[] = Array.isArray(pat.report) ? pat.report : [];
@@ -8504,7 +8526,7 @@ const WardScheduleSystem = () => {
                   </div>
                 </div>
                 <div className="flex justify-end p-4 border-t">
-                  <button onClick={() => { setShowPatternSelect(false); setGeneratedPatterns([]); }} className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg text-sm">キャンセル</button>
+                  <button onClick={() => { recordPatternChoice(generatedPatterns, null); setShowPatternSelect(false); setGeneratedPatterns([]); }} className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg text-sm">キャンセル</button>
                 </div>
               </div>
             </div>
