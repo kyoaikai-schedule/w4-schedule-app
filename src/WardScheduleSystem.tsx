@@ -6,6 +6,7 @@ import { validateRequests, buildConflictMap, RequestConflict } from './utils/val
 import { getJapaneseHolidays } from './utils/holidays';
 import TeamScheduleTab from './components/TeamScheduleTab';
 import { preparePatternsForSelect, recordPatternChoice, buildDailyRequirements, PREF_LOG_BLINDED } from './lib/preferenceLog';
+import { countLeave, fmtHalf } from './lib/leaveLedger';
 
 // ============================================
 // 定数定義
@@ -537,6 +538,8 @@ const WardScheduleSystem = () => {
   const [editingCell, setEditingCell] = useState<{ nurseId: number; dayIndex: number; x: number; y: number } | null>(null);
   // 希望一覧モーダルのインライン編集（管理者のみ）。day は 1-based。
   const [editingRequestCell, setEditingRequestCell] = useState<{ nurseId: number; day: number; x: number; y: number; top: number } | null>(null);
+  // 休暇台帳モーダル（フェーズ1: 既存の勤務表・集計表示には一切手を入れない別ビュー）
+  const [showLeaveLedger, setShowLeaveLedger] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [generatingPhase, setGeneratingPhase] = useState('');
   const [generatedPatterns, setGeneratedPatterns] = useState<any[]>([]);
@@ -578,7 +581,8 @@ const WardScheduleSystem = () => {
     yearEndDayStaff: 4, // 年末（12/30-31）の日勤者数
     newYearDayStaff: 4,  // 年始（1/1-3）の日勤者数
     excludeMgmtFromNightCount: false,  // 管理当直（管夜/管明）を夜勤回数カウントから除外
-    maxDoubleNightPairs: 2  // 連続夜勤ペア（夜明夜明）の月間上限
+    maxDoubleNightPairs: 2,  // 連続夜勤ペア（夜明夜明）の月間上限
+    kiteiKokyu: 10  // 規定公休日数（月次・病棟デフォルト。休暇台帳の照合に使用。個人上書きは nurseShiftPrefs.kokyuQuota）
   });
   
   // 前月データ関連（確定済み）
@@ -586,7 +590,7 @@ const WardScheduleSystem = () => {
   const [prevMonthConstraints, setPrevMonthConstraints] = useState<any>({});
   
   // 職員別シフト設定: { nurseId: { maxNightShifts: number, noNightShift: boolean, noDayShift: boolean } }
-  const [nurseShiftPrefs, setNurseShiftPrefs] = useState<Record<number, { maxNightShifts: number; noNightShift: boolean; noDayShift: boolean; excludeFromMaxDaysOff: boolean; maxRequests: number; excludeFromGeneration: boolean; requestLimits?: Record<string, number> }>>({});
+  const [nurseShiftPrefs, setNurseShiftPrefs] = useState<Record<number, { maxNightShifts: number; noNightShift: boolean; noDayShift: boolean; excludeFromMaxDaysOff: boolean; maxRequests: number; excludeFromGeneration: boolean; requestLimits?: Record<string, number>; kokyuQuota?: number }>>({});
   const [showNurseShiftPrefs, setShowNurseShiftPrefs] = useState(false);
   const [requestLimitConfig, setRequestLimitConfig] = useState<RequestLimitConfig>({
     dailyLimits: { weekday: {}, saturday: {}, sunday: {}, holiday: {} },
@@ -1104,6 +1108,30 @@ const WardScheduleSystem = () => {
     ), [nurses]);
   
   const daysInMonth = getDaysInMonth(targetYear, targetMonth);
+
+  // 休暇台帳（フェーズ1）: 表示中の月の勤務表から休暇種別の計上を導出する。
+  // 保存しない・既存テーブルに触れない・計算表示のみ（design-leave-types.md §1）。
+  // 生成対象外(excludeFromGeneration)の職員は照合対象外（quota=null、参考表示のみ）。
+  const leaveLedger = useMemo(() => {
+    const monthKey = `${targetYear}-${targetMonth}`;
+    if (!schedule || schedule.month !== monthKey || !schedule.data) return null;
+    const defaultQuota = Number((generateConfig as any).kiteiKokyu);
+    const isOtherOff = (s: string) => allShifts[s]?.category === 'off' && s !== '休' && s !== '有';
+    const rows = activeNurses.map(n => {
+      const raw: any[] = Array.isArray(schedule.data[n.id]) ? schedule.data[n.id] : [];
+      const counts = countLeave(raw.slice(0, daysInMonth), isOtherOff);
+      const pref = nurseShiftPrefs[n.id];
+      const excluded = !!pref?.excludeFromGeneration;
+      const quota = excluded
+        ? null
+        : (typeof pref?.kokyuQuota === 'number' ? pref.kokyuQuota : (Number.isFinite(defaultQuota) ? defaultQuota : null));
+      // 0.5単位に丸めて浮動小数の誤差を除去してから照合する
+      const diff = quota === null ? null : Math.round((counts.kokyuCount - quota) * 2) / 2;
+      return { nurse: n, ...counts, quota, diff, excluded };
+    });
+    const warnings = rows.filter(r => r.diff !== null && r.diff !== 0);
+    return { rows, warnings };
+  }, [schedule, activeNurses, daysInMonth, nurseShiftPrefs, generateConfig, allShifts, targetYear, targetMonth]);
 
   // 各看護師にアクセスコードを付与
   const nursesWithCodes = useMemo(() =>
@@ -5984,6 +6012,16 @@ const WardScheduleSystem = () => {
                 未提出者
               </button>
               <button
+                onClick={() => setShowLeaveLedger(true)}
+                className="px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl flex items-center gap-2 transition-colors border border-indigo-200"
+              >
+                <List size={18} />
+                休暇台帳
+                {leaveLedger && leaveLedger.warnings.length > 0 && (
+                  <span className="px-1.5 py-0.5 bg-red-100 text-red-700 rounded-full text-xs font-bold">⚠️{leaveLedger.warnings.length}</span>
+                )}
+              </button>
+              <button
                 onClick={() => setShowPrevMonthImport(true)}
                 className={`px-4 py-2 rounded-xl flex items-center gap-2 transition-colors ${
                   previousMonthData ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 hover:bg-gray-200'
@@ -7520,6 +7558,132 @@ const WardScheduleSystem = () => {
               </div>
             </div>
           </div>
+          </div>
+        )}
+        {/* 休暇台帳モーダル（フェーズ1: 計算表示のみ。勤務表本体・既存集計は不変更） */}
+        {showLeaveLedger && (
+          <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
+            <div className="min-h-full flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl p-6 w-full max-w-5xl my-4">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-xl font-bold">休暇台帳（{targetYear}年{targetMonth + 1}月）</h3>
+                  <div className="flex items-center gap-3">
+                    <label className="text-sm text-gray-600 flex items-center gap-1">
+                      規定公休日数（病棟既定）
+                      <input
+                        type="number" step={0.5} min={0} max={20}
+                        value={(generateConfig as any).kiteiKokyu ?? ''}
+                        onChange={(e) => {
+                          const v = e.target.value === '' ? 10 : Number(e.target.value);
+                          if (Number.isFinite(v)) setGenerateConfig(prev => ({ ...prev, kiteiKokyu: v } as any));
+                        }}
+                        className="w-20 px-2 py-1 border rounded-lg text-sm text-right"
+                      />
+                    </label>
+                    <button onClick={() => setShowLeaveLedger(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                      <X size={24} />
+                    </button>
+                  </div>
+                </div>
+
+                {!leaveLedger ? (
+                  <div className="text-center text-gray-500 py-12">
+                    この月の勤務表がまだ作成されていないため、台帳を表示できません。
+                  </div>
+                ) : (
+                  <>
+                    {leaveLedger.warnings.length > 0 && (
+                      <div className="bg-red-50 border-l-4 border-red-400 rounded-xl p-3 mb-4">
+                        <p className="text-sm font-bold text-red-700 mb-1">⚠️ 公休カウントが規定と一致しない職員が {leaveLedger.warnings.length} 名います</p>
+                        <ul className="text-xs text-red-700 space-y-0.5">
+                          {leaveLedger.warnings.map(w => (
+                            <li key={w.nurse.id}>
+                              ・{w.nurse.name}: 公休カウント {fmtHalf(w.kokyuCount)} / 規定 {fmtHalf(w.quota as number)}
+                              （{(w.diff as number) > 0 ? `超過 ${fmtHalf(w.diff as number)}日` : `不足 ${fmtHalf(-(w.diff as number))}日`}）
+                            </li>
+                          ))}
+                        </ul>
+                        <p className="text-[11px] text-red-500 mt-1">超過分の扱い（年休への振替等）は自動では行いません。勤務表画面で修正するか、師長判断で運用してください。</p>
+                      </div>
+                    )}
+
+                    <div className="overflow-auto max-h-[60vh]">
+                      <table className="w-full border-collapse text-sm">
+                        <thead className="sticky top-0 z-10">
+                          <tr className="bg-indigo-50">
+                            <th className="border p-2 sticky left-0 bg-indigo-50 whitespace-nowrap">氏名</th>
+                            <th className="border p-2 whitespace-nowrap">公休（休）</th>
+                            <th className="border p-2 whitespace-nowrap">半休（0.5公休）</th>
+                            <th className="border p-2 whitespace-nowrap">年休（有）</th>
+                            <th className="border p-2 whitespace-nowrap">半日年休（ﾈ）</th>
+                            <th className="border p-2 whitespace-nowrap">その他休暇</th>
+                            <th className="border p-2 whitespace-nowrap">公休カウント</th>
+                            <th className="border p-2 whitespace-nowrap">規定（個人上書き可）</th>
+                            <th className="border p-2 whitespace-nowrap">判定</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {leaveLedger.rows.map(r => (
+                            <tr key={r.nurse.id} className={r.excluded ? 'text-gray-400' : 'hover:bg-gray-50'}>
+                              <td className="border p-2 sticky left-0 bg-white font-medium whitespace-nowrap">{r.nurse.name}</td>
+                              <td className="border p-2 text-center">{r.kokyuFull}</td>
+                              <td className="border p-2 text-center">{r.hankyuHalves > 0 ? `${r.hankyuHalves}回 (${fmtHalf(0.5 * r.hankyuHalves)}日)` : '—'}</td>
+                              <td className="border p-2 text-center">{r.nenkyuFull || '—'}</td>
+                              <td className="border p-2 text-center">{r.nenkyuHalves > 0 ? `${r.nenkyuHalves}回 (${fmtHalf(0.5 * r.nenkyuHalves)}日)` : '—'}</td>
+                              <td className="border p-2 text-center">{r.otherOff || '—'}</td>
+                              <td className="border p-2 text-center font-bold">{fmtHalf(r.kokyuCount)}</td>
+                              <td className="border p-1 text-center">
+                                {r.excluded ? (
+                                  <span className="text-xs">対象外</span>
+                                ) : (
+                                  <input
+                                    type="number" step={0.5} min={0} max={31}
+                                    value={typeof nurseShiftPrefs[r.nurse.id]?.kokyuQuota === 'number' ? nurseShiftPrefs[r.nurse.id]!.kokyuQuota : ''}
+                                    placeholder={fmtHalf(Number((generateConfig as any).kiteiKokyu) || 0)}
+                                    onChange={(e) => {
+                                      const raw = e.target.value;
+                                      setNurseShiftPrefs(prev => {
+                                        const cur = { ...(prev[r.nurse.id] || { maxNightShifts: generateConfig.maxNightShifts, noNightShift: false, noDayShift: false, excludeFromMaxDaysOff: false, maxRequests: 3, excludeFromGeneration: false }) } as any;
+                                        if (raw === '') delete cur.kokyuQuota;
+                                        else if (Number.isFinite(Number(raw))) cur.kokyuQuota = Number(raw);
+                                        return { ...prev, [r.nurse.id]: cur };
+                                      });
+                                    }}
+                                    onBlur={() => {
+                                      saveWithStatus(async () => {
+                                        await saveSettingToDB('nurseShiftPrefs', JSON.stringify(nurseShiftPrefs));
+                                      });
+                                    }}
+                                    className="w-16 px-1 py-0.5 border rounded text-sm text-right"
+                                  />
+                                )}
+                              </td>
+                              <td className="border p-2 text-center">
+                                {r.diff === null ? <span className="text-xs text-gray-400">—</span>
+                                  : r.diff === 0 ? <span className="text-green-600 font-bold">✓</span>
+                                  : <span className="text-red-600 font-bold">{r.diff > 0 ? `+${fmtHalf(r.diff)}` : `−${fmtHalf(-r.diff)}`}</span>}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="mt-3 text-[11px] text-gray-500 space-y-0.5">
+                      <p>・計上規則: 休=公休1.0 ／ 午前半・午後半=公休0.5 ／ 有=年休1.0 ／ ﾈ/・/ﾈ=年休0.5 ／ 欠・産・育等=その他（不算入）／ 明・管明=勤務扱い</p>
+                      <p>・台帳は表示中の勤務表から毎回計算します（保存されません）。勤務表画面の従来の集計・表示は変更していません。</p>
+                      <p>・種別管理導入前の月や、種別を意識せず手修正した月は参考値です。</p>
+                    </div>
+                  </>
+                )}
+
+                <div className="flex justify-end mt-4">
+                  <button onClick={() => setShowLeaveLedger(false)} className="px-6 py-2 bg-gray-200 hover:bg-gray-300 rounded-xl transition-colors">
+                    閉じる
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         )}
         {/* 看護師追加モーダル */}
